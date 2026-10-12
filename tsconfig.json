@@ -1,5 +1,7 @@
 {
-  // Node.js 側(サーバー、単体テスト、e2e、設定ファイル)の型検査用。出力はしない
+  // Node.js 側(サーバー、単体テスト、設定ファイル)の型検査用。出力はしない。
+  // lib に DOM を入れない(サーバーのコードで document などを誤って使ったら、型検査で落とすため)。
+  // e2e/ は tsconfig.e2e.json で検査する(ブラウザの中で動くコードを書くので、DOM の型が要る)
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
@@ -15,7 +17,7 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "e2e/**/*.ts", "*.config.ts"],
-  // 画面のコードは tsconfig.client.json で検査する。e2e/fixtures はテストデータなので対象外
-  "exclude": ["src/client", "e2e/fixtures", "dist", "node_modules"]
+  "include": ["src/**/*.ts", "*.config.ts"],
+  // 画面のコードは tsconfig.client.json で、e2e/ は tsconfig.e2e.json で検査する
+  "exclude": ["src/client", "e2e", "dist", "node_modules"]
 }

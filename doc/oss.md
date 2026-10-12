@@ -17,6 +17,7 @@
 | @eslint/js | 10.0.1 | MIT | ESLint の JavaScript 用の推奨ルール |
 | typescript-eslint | 8.71.1 | MIT | ESLint の TypeScript 対応(パーサーと推奨ルール) |
 | @types/node | 22.20.5 | MIT | Node.js の型定義(対象の下限である Node.js 22 系に合わせている) |
+| playwright | 1.64.0 | Apache-2.0 | 画面のシステムテスト(`npm run e2e`)で、Chromium を自動操作するライブラリ。既存の Vitest の e2e から呼ぶ。テストランナーつきの `@playwright/test` は使わない |
 
 ## 実行時の依存(dependencies)
 
@@ -27,6 +28,25 @@
 | ignore | 7.0.12 | MIT | `.gitignore` のパターンの判定(S1-5。除外されたファイルを一覧に出さず、取得も拒否するため。自前で実装しない) |
 
 画面(React など)のライブラリは、それを使うタスクで追加する。
+
+## npm パッケージ以外で入手するもの(システムテスト用のブラウザ)
+
+`playwright` を `npm ci` で入れても、ブラウザ本体は入らない(`playwright` と `playwright-core` の `package.json` に、インストール時に動く `scripts` は無い)。ブラウザは、`playwright` のコマンド(`npx playwright install ...`)で別にダウンロードする。保存先は、既定でリポジトリの外(Linux では `~/.cache/ms-playwright/`)。リポジトリには含めない。開発時とテスト時にだけ使う。
+
+版は、`playwright` の版で決まる(`node_modules/playwright-core/browsers.json`)。`playwright` の版を上げたら、ブラウザも入れ直す。
+
+| 名前 | 版(playwright 1.64.0 が指定するもの) | ライセンス | 入手元 | 用途 |
+|---|---|---|---|---|
+| Chrome Headless Shell(Chrome for Testing のビルド) | 156.0.8078.4(playwright の revision 1248) | 下の注記を参照(1つのライセンスではない) | `https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-headless-shell-linux64.zip` | ヘッドレスの Chromium。画面のシステムテストで使う |
+| FFmpeg(playwright が配布するビルド) | playwright の revision 1013(FFmpeg 自体の版は未確認) | LGPL-2.1(同梱の `COPYING.LGPLv2.1` による。下の注記を参照) | `https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1013/ffmpeg-linux.zip` | `npx playwright install chromium` が、ブラウザと一緒に入れる(`--only-shell` を付けても入る)。playwright が何に使うかは、実物では未確認。このプロジェクトのテストから直接は使わない |
+
+ライセンスについて、確認できたことと、できていないこと(T1-P1、2026-10-12。ダウンロードした実物で確認):
+
+- **Chrome Headless Shell**: 同梱の `ABOUT` は「Google Chrome / Copyright 2026 Google LLC. All rights reserved.」とし、Chromium と他の OSS で作られていること、利用規約は `chrome://terms` を見ることを書いている。同梱の `LICENSE.headless_shell`(約 2.4 MB)は、Chromium プロジェクトの BSD 3 条項の文面から始まり、含まれている第三者のソフトウェアのライセンスを並べたもの。**全体に適用される利用条件(Chrome for Testing としての利用規約の中身)と、`LICENSE.headless_shell` に並ぶ個々のライセンスの一覧は、未確認**
+- **FFmpeg**: 同梱されているライセンスの文書は `COPYING.LGPLv2.1`(GNU LGPL 2.1)だけ。**ビルドの構成(有効にしたコーデックなど)と、対応するソースコードの入手先は、未確認**
+- どちらも、このリポジトリから再配布はしない(各自の環境で、配布元からダウンロードする)。コンテナイメージに含める場合(後のステージ)は、そのときに再配布の条件を確認する
+- フルの Chromium(Chrome for Testing 156.0.8078.4。`--only-shell` を付けない `npx playwright install chromium` で入る)は、T1-P1 の時点ではダウンロードしておらず、同梱のライセンス文書は未確認
+- ブラウザの実行に必要な OS のパッケージ(`npx playwright install-deps chromium` が入れるもの)は、OS の配布物であり、この表の対象外
 
 ## 最新版を使っていないもの
 
