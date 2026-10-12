@@ -77,7 +77,7 @@ export function closeServer(
       if (err) rejectClose(err);
       else resolveClose();
     });
-    // Node.js 20 の close() は、使われていない接続も閉じる。意図が分かるように明示しておく
+    // 対象の Node.js では、close() が使われていない接続も閉じる。意図が分かるように明示しておく
     server.closeIdleConnections();
   });
 }

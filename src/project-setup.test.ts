@@ -1,5 +1,5 @@
 /**
- * T1-0: プロジェクト設定の単体テスト
+ * T1-0、T1-N1: プロジェクト設定の単体テスト
  *
  * CLAUDE.md の「コマンド」節と SPEC §2.5 が固定している npm scripts の名前と、
  * Tester との取り決め(e2e の呼び出し方)が、package.json で守られていることを確認する。
@@ -54,11 +54,12 @@ describe('T1-0: package.json', () => {
     expect(all).not.toContain('E2E_SKIP_BUILD');
   });
 
-  it('T1-0: engines は Node.js 20 系で動く指定になっている', async () => {
+  it('T1-N1: engines は Node.js 22.13 以上の 22 系と、24 以上だけを許す', async () => {
     const pkg = await readPackageJson();
-    // 依存の対応範囲の共通部分に合わせる(vite: ^20.19.0 || >=22.12.0、
-    // eslint: ^20.19.0 || ^22.13.0 || >=24、vitest: ^20 || ^22 || >=24、@hono/node-server: >=20)。
-    // `>=20.19.0` だと、依存が対応しない Node.js 21 系や 22.0〜22.12 も許してしまう
-    expect(pkg.engines?.node).toBe('^20.19.0 || ^22.13.0 || >=24');
+    // 依存の対応範囲の共通部分に合わせる(eslint: ^20.19.0 || ^22.13.0 || >=24、
+    // vite: ^20.19.0 || >=22.12.0、vitest: ^20 || ^22 || >=24、@hono/node-server: >=20)。
+    // そこから、対象外にした Node.js 20 系を除く(Playwright の公式の動作要件が 22 / 24 / 26 のため)。
+    // `>=22` だと、依存が対応しない 22.0〜22.12 や 23 系も許してしまう
+    expect(pkg.engines?.node).toBe('^22.13.0 || >=24');
   });
 });
