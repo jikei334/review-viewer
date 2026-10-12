@@ -10,6 +10,8 @@ import { createApp } from './app.js';
 const HOST = '127.0.0.1:3000';
 const ORIGIN = 'http://127.0.0.1:3000';
 const CONFIG = {
+  // 存在しないディレクトリ。このファイルのテストは、リポジトリを読むところまで進まない
+  repoDir: '/nonexistent-repo',
   allowedHosts: ['127.0.0.1:3000', 'localhost:3000'],
   allowedOrigins: ['http://127.0.0.1:3000', 'http://localhost:3000'],
 };

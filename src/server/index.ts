@@ -5,8 +5,15 @@
  * このファイルだけに置く。テストからは import しない。
  * アプリの組み立ては app.ts、検証は request-guard.ts、設定は config.ts、起動と停止は server.ts。
  */
+import type { Server } from 'node:http';
 import { loadConfig } from './config.js';
-import { closeServer, createShutdownHandler, describeError, startServer } from './server.js';
+import {
+  closeServer,
+  createShutdownHandler,
+  describeError,
+  registerShutdownSignals,
+  startServer,
+} from './server.js';
 
 /**
  * ログを1行、標準エラーへ出す
@@ -19,23 +26,26 @@ function log(message: string): void {
 }
 
 /**
- * サーバーを起動し、終了シグナルのハンドラを登録する
+ * 終了シグナルのハンドラを登録してから、サーバーを起動する
  *
  * @returns 待ち受けを始めたら解決する
  * @throws 設定が不正なとき、または待ち受けを始められなかったとき
  */
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
-  const server = await startServer(config);
+  // 起動したサーバーの入れ物(待ち受けを始めるまでは空)
+  const running: { server?: Server } = {};
 
-  // コンテナ内の PID 1 では、SIGTERM / SIGINT の既定の動作が効かないので、明示的に登録する(C-6)
+  // 待ち受けを始める前に登録する。起動の途中でシグナルが届いたら、閉じるものが
+  // まだ無いので、そのまま終了する(C-6)
   const shutdown = createShutdownHandler({
-    close: () => closeServer(server),
+    close: () => (running.server === undefined ? Promise.resolve() : closeServer(running.server)),
     log,
     exit: (code) => process.exit(code),
   });
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  registerShutdownSignals(process, shutdown);
+
+  running.server = await startServer(config, { log });
 
   // 起動ログには、待ち受け先だけを出す。環境変数を丸ごと出さない(C-5)
   log(`Review Viewer: http://${config.host}:${config.port} で待ち受けています`);

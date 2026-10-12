@@ -8,7 +8,14 @@ import { Agent, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ServerConfig } from './config.js';
-import { closeServer, createShutdownHandler, describeError, startServer } from './server.js';
+import {
+  closeServer,
+  createShutdownHandler,
+  describeError,
+  registerShutdownSignals,
+  SHUTDOWN_SIGNALS,
+  startServer,
+} from './server.js';
 
 /** テスト用の Host ヘッダ(ポートは実行ごとに変わるので、許可リストを固定の値にする) */
 const TEST_HOST = 'review.test:3000';
@@ -101,10 +108,19 @@ describe('T1-1: startServer', () => {
 
   it('C-1: 実際の接続でも、許可リスト外の Host は 403', async () => {
     const { port } = await start();
-    for (const host of ['evil.com', `127.0.0.1:${port}`, 'review.test', 'review.test:3000.evil.com']) {
+    // 構文として正しい Host は、必ず 403(400 を許さない)
+    for (const host of ['evil.com', `127.0.0.1:${port}`, 'review.test']) {
       const res = await send(port, { headers: { Host: host } });
-      expect([400, 403], `Host: ${host} に ${res.status} が返った`).toContain(res.status);
+      expect(res.status, `Host: ${host} に ${res.status} が返った`).toBe(403);
     }
+  });
+
+  it('C-1: 構文が壊れた Host は通過しない(403 または 400)', async () => {
+    const { port } = await start();
+    // ポートの位置に数字以外が続く値は、HTTP の層が 400 で拒否することがある
+    const host = 'review.test:3000.evil.com';
+    const res = await send(port, { headers: { Host: host } });
+    expect([400, 403], `Host: ${host} に ${res.status} が返った`).toContain(res.status);
   });
 
   it('C-1: リクエスト行が絶対形式の URL でも、Host ヘッダで判定する', async () => {
@@ -251,6 +267,59 @@ describe('C-6: createShutdownHandler', () => {
 
     expect(exit).toHaveBeenCalledExactlyOnceWith(1);
     expect(log.mock.calls.flat().join('\n')).toContain('close failed');
+  });
+});
+
+describe('C-6: registerShutdownSignals', () => {
+  it('C-6: SIGTERM と SIGINT の両方に、同じハンドラを明示的に登録する', () => {
+    const on = vi.fn();
+    const handler = vi.fn();
+
+    registerShutdownSignals({ on }, handler);
+
+    expect(SHUTDOWN_SIGNALS).toEqual(['SIGTERM', 'SIGINT']);
+    expect(on.mock.calls).toEqual([
+      ['SIGTERM', handler],
+      ['SIGINT', handler],
+    ]);
+  });
+
+  it('C-6: 待ち受けを始める前(閉じるサーバーがまだ無い状態)にシグナルが届いたら、そのまま終了コード 0 で終了する', async () => {
+    // index.ts と同じ組み立て: 登録が先、起動が後。サーバーが無い間は、閉じるものが無い
+    const listeners = new Map<string, (signal: string) => void>();
+    const exit = vi.fn();
+    const closeStarted = vi.fn();
+    const holder: { server?: Server } = {};
+    const handler = createShutdownHandler({
+      close: () => {
+        if (holder.server === undefined) return Promise.resolve();
+        closeStarted();
+        return closeServer(holder.server);
+      },
+      log: vi.fn(),
+      exit,
+    });
+    registerShutdownSignals({ on: (signal, listener) => listeners.set(signal, listener) }, handler);
+
+    listeners.get('SIGTERM')?.('SIGTERM');
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(0));
+    expect(closeStarted).not.toHaveBeenCalled();
+  });
+
+  it('C-6: 登録したハンドラは、起動後のシグナルでサーバーを閉じてから終了する', async () => {
+    const listeners = new Map<string, (signal: string) => void>();
+    const exit = vi.fn();
+    const { server } = await start();
+    const handler = createShutdownHandler({
+      close: () => closeServer(server, 1000),
+      log: vi.fn(),
+      exit,
+    });
+    registerShutdownSignals({ on: (signal, listener) => listeners.set(signal, listener) }, handler);
+
+    listeners.get('SIGINT')?.('SIGINT');
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(0));
+    expect(server.listening).toBe(false);
   });
 });
 

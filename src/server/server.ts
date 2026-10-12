@@ -6,7 +6,7 @@
  */
 import { createServer, type Server } from 'node:http';
 import { getRequestListener } from '@hono/node-server';
-import { createApp } from './app.js';
+import { createApp, type AppDeps } from './app.js';
 import type { ServerConfig } from './config.js';
 
 /** 停止のとき、処理中のリクエストの完了を待つ時間の既定値(ミリ秒) */
@@ -25,11 +25,12 @@ export type ExitFn = (code: number) => void;
  * Host ヘッダの無いリクエストを、bind アドレスで補って通さないため。
  *
  * @param config サーバーの設定
+ * @param deps アプリが使うもの(ログの出力先など。省略可)
  * @returns 待ち受け中の HTTP サーバー
  * @throws 待ち受けを始められなかったとき(ポートが使用中など)
  */
-export function startServer(config: ServerConfig): Promise<Server> {
-  const app = createApp(config);
+export function startServer(config: ServerConfig, deps: AppDeps = {}): Promise<Server> {
+  const app = createApp(config, deps);
   const server = createServer(getRequestListener(app.fetch));
 
   return new Promise<Server>((resolveStart, rejectStart) => {
@@ -116,6 +117,40 @@ export function createShutdownHandler(deps: ShutdownDeps): (signal: string) => v
       }
     );
   };
+}
+
+/** 終了シグナルを登録する相手(`process` と同じ形。テストで差し替えられるようにする) */
+export interface SignalTarget {
+  /**
+   * シグナルのハンドラを登録する
+   *
+   * @param signal シグナルの名前
+   * @param listener シグナルを受けたときに呼ばれる関数(シグナルの名前を受け取る)
+   * @returns 何を返してもよい(`process.on` は自分自身を返す)
+   */
+  on(signal: ShutdownSignal, listener: (signal: string) => void): unknown;
+}
+
+/** 明示的にハンドラを登録する終了シグナル */
+export const SHUTDOWN_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
+
+/** 終了シグナルの名前 */
+export type ShutdownSignal = (typeof SHUTDOWN_SIGNALS)[number];
+
+/**
+ * 終了シグナル(SIGTERM / SIGINT)のハンドラを登録する(C-6)
+ *
+ * コンテナ内の PID 1 では、シグナルの既定の動作が効かないので、明示的に登録する。
+ * **待ち受けを始める前に呼ぶこと**(起動の途中で届いたシグナルを取りこぼさないため)。
+ *
+ * @param target 登録する相手(`process` を渡す)
+ * @param handler シグナルの名前を受け取るハンドラ(`createShutdownHandler` の戻り値)
+ * @returns なし
+ */
+export function registerShutdownSignals(target: SignalTarget, handler: (signal: string) => void): void {
+  for (const signal of SHUTDOWN_SIGNALS) {
+    target.on(signal, handler);
+  }
 }
 
 /**
