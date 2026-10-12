@@ -479,7 +479,9 @@ describe('C-6: Graceful shutdown', () => {
         expect(before.status).toBe(200);
 
         // stop() はシグナルを送り、プロセスが終了してポートが閉じるまでを待つ。
-        // 5 秒待っても終わらなければ SIGKILL し、forced=true を返す
+        // 暫定: SPEC C-6 は終了までの秒数を指定していないため、ヘルパーの stop() は 5 秒を仮定している。
+        // 別の上限が必要な場合は e2e/helpers/server.ts の doStop 内のタイムアウト値を変更し、
+        // SPEC に根拠となる秒数を追記すること
         const result = await server.stop(signal);
         expect(result.forced, `${signal} では終了せず、SIGKILL が必要だった`).toBe(false);
 

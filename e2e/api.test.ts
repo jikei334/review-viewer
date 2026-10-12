@@ -388,6 +388,8 @@ describe('S1-6: Large and binary files do not return their content', () => {
 
   it('S1-6: 1MB を超えるファイルは、本文を返さない', async () => {
     const res = await request(server, '/api/file?path=large-file.txt');
+    // 暫定: SPEC §2.2 はステータスコードを指定していないため、5xx でなければ受け入れる。
+    // ユーザー確認済み(2026-10-12): 実装が 200 以外を返す場合は SPEC に追記してからこのテストを調整すること
     expect(res.status, `サーバーエラー(${res.status})になった`).toBeLessThan(500);
     expect(bodyContains(res.text, LARGE_MARKER), '巨大ファイルの本文が応答に含まれている').toBe(false);
     expect(res.body.length, '応答が 1MB 以上ある').toBeLessThan(1024 * 1024);
@@ -395,6 +397,7 @@ describe('S1-6: Large and binary files do not return their content', () => {
 
   it.each(['image.png', 'binary-data.txt'])('S1-6: バイナリ(%s)は、本文を返さない', async (path) => {
     const res = await request(server, `/api/file?path=${path}`);
+    // 暫定: 上と同じく SPEC §2.2 はステータスコードを指定していないため、5xx でなければ受け入れる
     expect(res.status, `サーバーエラー(${res.status})になった`).toBeLessThan(500);
     expect(bodyContains(res.text, BINARY_MARKER), 'バイナリの中身が応答に含まれている').toBe(false);
     // 生のバイト列としても返っていない
