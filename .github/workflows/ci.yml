@@ -1,0 +1,73 @@
+# CI(T1-7): 単体テスト一式(npm run check)と、システムテスト(npm run e2e)を実行する。
+#
+# 方針:
+#  - 手順は、手元で実行するコマンドと同じ(npm ci → npm run check → ブラウザの入手 → npm run e2e)。
+#    CI のためだけの分岐や、失敗を無視する設定は入れない。ステージの途中で、未実装の基準の
+#    システムテストが赤なら、CI も赤になる(正常)
+#  - 秘密(トークンなど)を使わない。システムテストのトークンは、テストが実行時に作るダミー。
+#    アプリの環境変数も、ここでは設定しない(テストが、起動するアプリに自分で渡す)
+#  - 使うアクションは GitHub 公式(actions/ の配下)だけ。版は、コミットの SHA で固定する。
+#    タグ(v7 など)は後から付け替えられるので、公開リポジトリでは SHA で固定して、
+#    意図しない中身に差し替わらないようにする。行末のコメントが、その SHA に対応するリリースの版。
+#    上げるときは、公式のリリースで SHA を確認して、SHA とコメントの両方を書き換える
+#  - ブラウザ(Chromium)はキャッシュしない(Playwright の公式の推奨。復元にかかる時間が
+#    ダウンロードと同程度で、OS のパッケージはキャッシュできない)
+name: CI
+
+on:
+  # main と develop への push(マージの結果)で実行する
+  push:
+    branches:
+      - main
+      - develop
+  # プルリクエスト(feature/* などの作業ブランチは、ここで確認する)
+  pull_request:
+
+# 権限は最小にする(リポジトリの読み取りだけ)
+permissions:
+  contents: read
+
+# 同じプルリクエスト(同じ作業ブランチ)で新しい実行が始まったら、古い実行を止める。
+# github.head_ref は pull_request のときだけ値を持つ。push(main、develop)では空なので、
+# 実行ごとに違う github.run_id がグループ名になり、続けてマージしても前のコミットの実行は止まらない
+# (コミットごとの結果を残す)。GitHub の公式ドキュメントの「fallback value」の例と同じ書き方
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: check と e2e
+    # Ubuntu の版を固定する(ubuntu-latest は、指す版が予告のうえで切り替わる)。
+    # Playwright 1.64.0 が対応する Ubuntu は 22.04 / 24.04 / 26.04。開発機と同じ 26.04 を使う
+    runs-on: ubuntu-26.04
+    # 止まったテストで、実行時間を使い切らないための上限
+    timeout-minutes: 20
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 以降の手順は、リポジトリへの書き込みも追加の取得もしないので、認証情報を残さない
+          persist-credentials: false
+
+      - name: Node.js 22 系を用意
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # package.json の engines(^22.13.0 || >=24)を満たす 22 系。
+          # Playwright の動作要件が「22 系の最新」なので、ランナーに入っている版で済ませず、最新を確認する
+          node-version: '22'
+          check-latest: true
+          # npm のダウンロードのキャッシュ(~/.npm)を、package-lock.json の内容をキーにして使う
+          cache: npm
+
+      - name: 依存をインストール(package-lock.json のとおり)
+        run: npm ci
+
+      - name: 型検査・Lint・単体テスト
+        run: npm run check
+
+      - name: Chromium と、その実行に必要な OS のパッケージを入手
+        run: npx playwright install --with-deps chromium
+
+      - name: システムテスト(ビルドを含む)
+        run: npm run e2e
