@@ -1,0 +1,32 @@
+{
+  "name": "review-viewer",
+  "version": "0.1.0",
+  "description": "レビュー資料(Markdown)とソースコードをブラウザで並べて読み、コメントを付けるローカルツール",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run clean && npm run build:server && npm run build:client",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:client": "vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
+    "lint": "eslint .",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "start": "node dist/server/index.js",
+    "e2e": "vitest run --config e2e/vitest.config.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "20.19.43",
+    "eslint": "10.12.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1",
+    "vite": "8.3.4",
+    "vitest": "4.1.11"
+  }
+}

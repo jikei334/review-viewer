@@ -1,0 +1,21 @@
+{
+  // Node.js 側(サーバー、単体テスト、e2e、設定ファイル)の型検査用。出力はしない
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "e2e/**/*.ts", "*.config.ts"],
+  // 画面のコードは tsconfig.client.json で検査する。e2e/fixtures はテストデータなので対象外
+  "exclude": ["src/client", "e2e/fixtures", "dist", "node_modules"]
+}
