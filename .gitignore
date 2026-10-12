@@ -1,0 +1,31 @@
+# 依存・ビルド成果物
+node_modules/
+dist/
+coverage/
+
+# 環境変数・秘密(公開リポジトリにしても漏れないように)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+credentials*
+.claude.json
+.claude/credentials*
+
+# Claude Code のローカル設定
+.claude/settings.local.json
+
+# 実行時データ(コメントなど)
+data/
+
+# テストの一時ファイル
+e2e/.tmp/
+test-results/
+playwright-report/
+
+# OS・エディタ
+.DS_Store
+.idea/
+.vscode/
