@@ -56,6 +56,9 @@ describe('T1-0: package.json', () => {
 
   it('T1-0: engines は Node.js 20 系で動く指定になっている', async () => {
     const pkg = await readPackageJson();
-    expect(pkg.engines?.node).toBe('>=20.19.0');
+    // 依存の対応範囲の共通部分に合わせる(vite: ^20.19.0 || >=22.12.0、
+    // eslint: ^20.19.0 || ^22.13.0 || >=24、vitest: ^20 || ^22 || >=24、@hono/node-server: >=20)。
+    // `>=20.19.0` だと、依存が対応しない Node.js 21 系や 22.0〜22.12 も許してしまう
+    expect(pkg.engines?.node).toBe('^20.19.0 || ^22.13.0 || >=24');
   });
 });
