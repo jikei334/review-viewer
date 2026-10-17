@@ -48,6 +48,14 @@
 - フルの Chromium(Chrome for Testing 156.0.8078.4。`--only-shell` を付けない `npx playwright install chromium` で入る)は、T1-P1 の時点ではダウンロードしておらず、同梱のライセンス文書は未確認
 - ブラウザの実行に必要な OS のパッケージ(`npx playwright install-deps chromium` が入れるもの)は、OS の配布物であり、この表の対象外
 
+## npm パッケージ以外で入手するもの(push 前のシークレット検出)
+
+push 前にシークレットを検出するために使う(`.githooks/pre-push`)。リポジトリには含めない。各自の環境に入れる(PATH が通っていないと、フックは push を止める)。
+
+| OSS 名 | バージョン | ライセンス | 入手元 | 用途 |
+|---|---|---|---|---|
+| gitleaks | 8.30.1 | MIT(リリースの tar.gz に同梱の `LICENSE` で確認) | `https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz`(同じリリースの `gitleaks_8.30.1_checksums.txt` で SHA-256 を検証する) | `git push` の前に、送るコミットのシークレットを検出する。初回の push では、リモートにないコミット、つまり履歴全体を検査する |
+
 ## 最新版を使っていないもの
 
 | OSS 名 | 最新版(2026-10-12 時点) | 採用した版 | 理由 |

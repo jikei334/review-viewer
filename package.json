@@ -18,7 +18,8 @@
     "lint": "eslint .",
     "check": "npm run typecheck && npm run lint && npm run test",
     "start": "node dist/server/index.js",
-    "e2e": "vitest run --config e2e/vitest.config.ts"
+    "e2e": "vitest run --config e2e/vitest.config.ts",
+    "prepare": "git config core.hooksPath .githooks || echo \"prepare: core.hooksPath を設定できませんでした(git リポジトリ外?)\""
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

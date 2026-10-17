@@ -32,6 +32,21 @@ npx playwright install --with-deps chromium
 
 ライセンスや詳細は [`doc/oss.md`](./doc/oss.md) の「npm パッケージ以外で入手するもの」を参照。
 
+### 3. push 前のシークレット検出(gitleaks)
+
+`npm ci` の `prepare` スクリプトが、`git config core.hooksPath .githooks` を設定する。これで、`git push` の前に `.githooks/pre-push` が gitleaks を実行する。シークレットらしきものが見つかったときと、gitleaks が入っていないときは、push を中止する。
+
+```bash
+# gitleaks のインストール例(Linux x64。版は doc/oss.md を参照)
+curl -sSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+curl -sSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+grep linux_x64.tar.gz gitleaks_8.30.1_checksums.txt | sha256sum -c
+tar xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks && install -m 755 gitleaks ~/.local/bin/
+```
+
+- 誤検出のときは、`.gitleaksignore` に fingerprint を追加する
+- 履歴全体を手動で検査するときは `gitleaks git --redact .`
+
 ## よく使うコマンド
 
 ```bash
