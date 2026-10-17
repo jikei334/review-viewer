@@ -190,8 +190,10 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 | 各ソース行 | `[data-testid="source-line"][data-line="N"]` | N は 1 始まりの行番号。強調表示された行は `data-highlighted="true"` を持つ |
 
 - GFM の表は `table` 要素として、タスクリストは `input[type=checkbox]` として、コードブロックは `pre > code` として変換される
+- コードブロックのシンタックスハイライトは `span` 要素で行われる(テストは `pre > code` 内の `span` の存在で確認する)
 - Mermaid の図は `svg` 要素として描画される
 - `path:line` 形式のリンクは `a` 要素になる
+- `[data-testid="report-list"]` 内の `a` 要素は、リンクを識別できる文字列(レポートのファイル名またはパスを含む `href` またはテキスト)を持つ
 
 ---
 
