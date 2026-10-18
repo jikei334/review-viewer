@@ -2,7 +2,7 @@
  * T1-3: URL のハッシュとレポートのパスの対応の単体テスト
  */
 import { describe, expect, it } from 'vitest';
-import { parseReportHash, reportHash } from './route.js';
+import { buildRoute, parseReportHash, parseRoute, reportHash } from './route.js';
 
 describe('route', () => {
   it('S1-2: reportHash と parseReportHash は往復で元に戻る', () => {
@@ -21,5 +21,25 @@ describe('route', () => {
     expect(parseReportHash('#/other/x')).toBeNull();
     expect(parseReportHash('#/report/')).toBeNull();
     expect(parseReportHash('#/report/%E3')).toBeNull();
+  });
+});
+
+describe('parseRoute / buildRoute', () => {
+  it('S1-8: レポートとソース(行つき)が往復で元に戻る', () => {
+    const route = { report: 'reports/a b.md', source: { path: 'src/x&y?.ts', line: 42 } };
+    expect(parseRoute(buildRoute(route))).toEqual(route);
+  });
+  it('S1-8: ソースだけ、レポートだけでも往復できる', () => {
+    expect(parseRoute(buildRoute({ report: null, source: { path: 'a.ts', line: null } }))).toEqual({
+      report: null,
+      source: { path: 'a.ts', line: null },
+    });
+    expect(parseRoute(buildRoute({ report: 'r.md', source: null }))).toEqual({ report: 'r.md', source: null });
+  });
+  it('S1-8: 不正な行番号(0、負、数字以外)は null、空のハッシュは何も開かない', () => {
+    for (const line of ['0', '-1', 'x', '1.5', '']) {
+      expect(parseRoute(`#/?src=a.ts&line=${line}`).source).toEqual({ path: 'a.ts', line: null });
+    }
+    expect(parseRoute('')).toEqual({ report: null, source: null });
   });
 });

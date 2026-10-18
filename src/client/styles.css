@@ -71,3 +71,68 @@ body {
 .mermaid-diagram {
   overflow: auto;
 }
+.sidebar-heading {
+  font-size: 1rem;
+  margin: 1.5rem 0 0.5rem;
+}
+.source-tree ul {
+  padding-left: 0.9rem;
+}
+.source-tree > ul {
+  padding-left: 0;
+}
+.source-tree button {
+  background: none;
+  border: none;
+  padding: 0.1rem 0.2rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.source-tree button:hover {
+  background: #eaeef2;
+}
+.source-tree .tree-file[aria-current='true'] {
+  font-weight: bold;
+}
+.content.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+.pane {
+  min-width: 0;
+}
+.source-path {
+  font-size: 0.95rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  margin: 0 0 0.5rem;
+  overflow-wrap: anywhere;
+}
+.source-lines {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow: auto;
+  background: #f6f8fa;
+  padding: 0.5rem 0;
+}
+.source-line {
+  display: flex;
+  white-space: pre;
+}
+.source-line .line-number {
+  flex: none;
+  width: 3.5rem;
+  padding-right: 0.8rem;
+  text-align: right;
+  color: #6e7781;
+  user-select: none;
+}
+.source-line .line-text {
+  font-family: inherit;
+  min-height: 1.4em;
+}
+.source-line[data-highlighted='true'] {
+  background: #fff8c5;
+}

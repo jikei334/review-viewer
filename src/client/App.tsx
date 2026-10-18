@@ -1,9 +1,11 @@
 /**
  * 画面の本体: レポート一覧と、レポートの表示
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchReports, type ReportSummary } from './api.js';
-import { parseReportHash, reportHash } from './route.js';
+import { buildRoute, parseRoute, type ViewRoute } from './route.js';
+import { SourceTree } from './SourceTree.js';
+import { SourceView } from './SourceView.js';
 import { ReportView } from './ReportView.js';
 
 /** 一覧の取得状態 */
@@ -13,22 +15,22 @@ type ListState =
   | { readonly status: 'ready'; readonly reports: readonly ReportSummary[] };
 
 /**
- * URL のハッシュを監視して、開くレポートのパスを返す
+ * URL のハッシュを監視して、画面の状態(開くレポートとソース)を返す
  *
- * @returns 開くレポートのパス。開いていなければ null
+ * @returns 画面の状態
  */
-function useSelectedPath(): string | null {
-  const [path, setPath] = useState(() => parseReportHash(window.location.hash));
+function useRoute(): ViewRoute {
+  const [hash, setHash] = useState(() => window.location.hash);
   useEffect(() => {
     const onChange = (): void => {
-      setPath(parseReportHash(window.location.hash));
+      setHash(window.location.hash);
     };
     window.addEventListener('hashchange', onChange);
     return () => {
       window.removeEventListener('hashchange', onChange);
     };
   }, []);
-  return path;
+  return useMemo(() => parseRoute(hash), [hash]);
 }
 
 /**
@@ -38,7 +40,8 @@ function useSelectedPath(): string | null {
  */
 export function App() {
   const [list, setList] = useState<ListState>({ status: 'loading' });
-  const selected = useSelectedPath();
+  const route = useRoute();
+  const selected = route.report;
 
   useEffect(() => {
     let cancelled = false;
@@ -76,7 +79,7 @@ export function App() {
                 <li key={report.path}>
                   {/* 名前はテキストとして出す(ファイル名に HTML があっても、タグにならない) */}
                   <a
-                    href={reportHash(report.path)}
+                    href={buildRoute({ report: report.path, source: route.source })}
                     aria-current={report.path === selected ? 'page' : undefined}
                   >
                     {report.name}
@@ -86,12 +89,26 @@ export function App() {
             </ul>
           )}
         </div>
+        <h2 className="sidebar-heading">ソース</h2>
+        <SourceTree
+          selectedPath={route.source?.path ?? null}
+          onSelectFile={(path) => {
+            window.location.hash = buildRoute({ report: route.report, source: { path, line: null } });
+          }}
+        />
       </nav>
-      <main className="content">
-        {selected === null ? (
-          <p className="status">左の一覧からレポートを選んでください</p>
-        ) : (
-          <ReportView path={selected} />
+      <main className={route.source === null ? 'content' : 'content split'}>
+        <div className="pane report-pane">
+          {selected === null ? (
+            <p className="status">左の一覧からレポートを選んでください</p>
+          ) : (
+            <ReportView path={selected} />
+          )}
+        </div>
+        {route.source !== null && (
+          <div className="pane source-pane">
+            <SourceView path={route.source.path} line={route.source.line} />
+          </div>
         )}
       </main>
     </div>

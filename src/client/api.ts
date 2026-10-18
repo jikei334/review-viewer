@@ -113,3 +113,38 @@ export async function fetchFile(path: string): Promise<FileResult> {
   }
   throw new ApiError('ファイルの形式が想定と違います', 200);
 }
+
+/** ディレクトリ一覧の1件 */
+export interface TreeEntry {
+  /** 名前 */
+  readonly name: string;
+  /** リポジトリ相対パス */
+  readonly path: string;
+  /** 種類 */
+  readonly type: 'file' | 'directory';
+}
+
+/**
+ * ディレクトリの一覧を取得する
+ *
+ * @param path リポジトリ相対パス(ルートは空文字列)
+ * @returns 配下の一覧(ディレクトリが先、名前の昇順。並べ替えはサーバーが行う)
+ * @throws ApiError 取得に失敗した、または応答の形が想定と違うとき
+ */
+export async function fetchTree(path: string): Promise<TreeEntry[]> {
+  const body = await getJson(`/api/tree?path=${encodeURIComponent(path)}`);
+  if (!isRecord(body) || !Array.isArray(body.entries)) {
+    throw new ApiError('ツリーの形式が想定と違います', 200);
+  }
+  return body.entries.map((item: unknown): TreeEntry => {
+    if (
+      !isRecord(item) ||
+      typeof item.name !== 'string' ||
+      typeof item.path !== 'string' ||
+      (item.type !== 'file' && item.type !== 'directory')
+    ) {
+      throw new ApiError('ツリーの形式が想定と違います', 200);
+    }
+    return { name: item.name, path: item.path, type: item.type };
+  });
+}

@@ -2,7 +2,7 @@
  * T1-3: API クライアントの単体テスト(応答の形の検証)
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, fetchFile, fetchReports } from './api.js';
+import { ApiError, fetchFile, fetchReports, fetchTree } from './api.js';
 
 /**
  * fetch を、指定した応答を返すものに差し替える
@@ -68,5 +68,26 @@ describe('fetchFile', () => {
     await expect(fetchFile('x')).rejects.toBeInstanceOf(ApiError);
     stubFetch({ path: 'x', kind: 'other' });
     await expect(fetchFile('x')).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe('fetchTree', () => {
+  it('S1-8: 一覧を返し、パスを URL エンコードして要求する', async () => {
+    const entries = [
+      { name: 'src', path: 'src', type: 'directory' },
+      { name: 'a b.ts', path: 'a b.ts', type: 'file' },
+    ];
+    const fn = stubFetch({ path: '', entries });
+    expect(await fetchTree('')).toEqual(entries);
+    expect(fn.mock.calls[0]?.[0]).toBe('/api/tree?path=');
+    const fn2 = stubFetch({ path: 'a b', entries: [] });
+    await fetchTree('a b');
+    expect(fn2.mock.calls[0]?.[0]).toBe('/api/tree?path=a%20b');
+  });
+  it('S1-8: 形が違う応答(未知の type など)は ApiError', async () => {
+    stubFetch({ entries: [{ name: 'x', path: 'x', type: 'symlink' }] });
+    await expect(fetchTree('')).rejects.toBeInstanceOf(ApiError);
+    stubFetch({});
+    await expect(fetchTree('')).rejects.toBeInstanceOf(ApiError);
   });
 });
