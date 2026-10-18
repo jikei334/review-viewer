@@ -208,6 +208,12 @@ const ALLOWED_FINDINGS: readonly AllowedFinding[] = [
     literal: 'node:child_process',
     reason: 'システムテストの前に、SPEC §2.5 の契約どおりに `npm run build` を実行するため(Tester の領域)',
   },
+  {
+    file: 'e2e/startup.test.ts',
+    rule: 'process-launch-module',
+    literal: 'node:child_process',
+    reason: 'システムテストが、SPEC §2.5 の契約どおりに `npm start -- <パス>` でアプリを起動し、終了コードを確かめるため(Tester の領域。T1-8)',
+  },
   // 以下の2件は、T1-P1 で src/project-setup.test.ts に入った「依存に Anthropic のパッケージが無い」
   // テストの、題名と、比較に使う接頭辞。T1-P1 と T1-6 のどちらが先にコミットされても通るように、
   // 該当が無くてもよいことにしている。
