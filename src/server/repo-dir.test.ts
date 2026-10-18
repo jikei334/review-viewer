@@ -34,6 +34,9 @@ describe('S1-10: resolveBaseDir', () => {
   it('S1-10: INIT_CWD が絶対パスならそれを使う', () => {
     expect(resolveBaseDir({ INIT_CWD: '/home/u/proj' }, '/app')).toBe('/home/u/proj');
   });
+  it('S1-10: INIT_CWD のキー自体が無ければ cwd を使う', () => {
+    expect(resolveBaseDir({}, '/app')).toBe('/app');
+  });
   it.each([undefined, '', '  ', 'relative/dir'])('S1-10: INIT_CWD が %j なら cwd を使う', (v) => {
     expect(resolveBaseDir({ INIT_CWD: v }, '/app')).toBe('/app');
   });
