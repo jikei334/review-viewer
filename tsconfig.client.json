@@ -4,6 +4,7 @@
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
+    "jsx": "react-jsx",
     "moduleResolution": "Bundler",
     "types": [],
     "strict": true,
@@ -15,5 +16,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/client/**/*.ts"]
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx"]
 }

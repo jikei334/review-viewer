@@ -3,6 +3,7 @@
  *
  * 画面のソースは src/client、ビルド成果物は dist/client に置く。
  */
+import react from '@vitejs/plugin-react';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
@@ -11,6 +12,7 @@ const ROOT_DIR = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   root: resolve(ROOT_DIR, 'src/client'),
+  plugins: [react()],
   build: {
     outDir: resolve(ROOT_DIR, 'dist/client'),
     emptyOutDir: true,

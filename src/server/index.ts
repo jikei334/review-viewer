@@ -6,6 +6,7 @@
  * アプリの組み立ては app.ts、検証は request-guard.ts、設定は config.ts、起動と停止は server.ts。
  */
 import type { Server } from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import {
   closeServer,
@@ -14,6 +15,10 @@ import {
   registerShutdownSignals,
   startServer,
 } from './server.js';
+import { StaticAssets } from './static-assets.js';
+
+/** 画面のビルド成果物のディレクトリ(dist/server/index.js から見た dist/client) */
+const CLIENT_DIR = fileURLToPath(new URL('../client', import.meta.url));
 
 /**
  * ログを1行、標準エラーへ出す
@@ -45,7 +50,9 @@ async function main(): Promise<void> {
   });
   registerShutdownSignals(process, shutdown);
 
-  running.server = await startServer(config, { log });
+  // 画面のビルド成果物が無ければ、ここで失敗させる(画面が空のまま動いていると気づけないため)
+  const assets = await StaticAssets.load(CLIENT_DIR);
+  running.server = await startServer(config, { log, assets });
 
   // 起動ログには、待ち受け先だけを出す。環境変数を丸ごと出さない(C-5)
   log(`Review Viewer: http://${config.host}:${config.port} で待ち受けています`);

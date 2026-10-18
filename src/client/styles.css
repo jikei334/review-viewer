@@ -1,0 +1,73 @@
+/* 画面の最小限のスタイル(暫定: 見た目の作り込みは後のタスクで行う) */
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans JP', sans-serif;
+  color: #1f2328;
+  background: #ffffff;
+}
+.layout {
+  display: grid;
+  grid-template-columns: 18rem 1fr;
+  min-height: 100vh;
+}
+.sidebar {
+  border-right: 1px solid #d0d7de;
+  padding: 1rem;
+  background: #f6f8fa;
+  overflow-wrap: anywhere;
+}
+.sidebar h1 {
+  font-size: 1.1rem;
+  margin: 0 0 1rem;
+}
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sidebar li {
+  margin: 0.25rem 0;
+}
+.sidebar a[aria-current='page'] {
+  font-weight: bold;
+}
+.content {
+  padding: 1rem 2rem;
+  min-width: 0;
+}
+.status.error,
+.mermaid-error {
+  color: #82071e;
+}
+.mermaid-error {
+  border: 1px solid #ff8182;
+  background: #ffebe9;
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
+}
+.markdown-body {
+  line-height: 1.6;
+  max-width: 60rem;
+}
+.markdown-body table {
+  border-collapse: collapse;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid #d0d7de;
+  padding: 0.3rem 0.7rem;
+}
+.markdown-body pre {
+  background: #f6f8fa;
+  padding: 0.8rem;
+  overflow: auto;
+}
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mermaid-diagram {
+  overflow: auto;
+}

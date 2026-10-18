@@ -12,6 +12,7 @@ import { RepoAccessError, type RepoAccessCode } from './path-policy.js';
 import { RepoReader } from './RepoReader.js';
 import { checkRequest } from './request-guard.js';
 import { ReviewService } from './ReviewService.js';
+import type { StaticAssets } from './static-assets.js';
 
 /** アプリの組み立てに必要な設定(許可リストと、対象リポジトリ) */
 export type AppConfig = Pick<ServerConfig, 'allowedHosts' | 'allowedOrigins' | 'repoDir'>;
@@ -25,7 +26,29 @@ export interface AppDeps {
   readonly service?: Pick<ReviewService, 'listReports' | 'listTree' | 'getFile'>;
   /** ログの出力先。省略時は標準エラー */
   readonly log?: AppLogger;
+  /** 画面の静的ファイルの配信元。省略時は、画面を配信しない(`GET /` は 404) */
+  readonly assets?: StaticAssets;
 }
+
+/**
+ * すべての応答に付ける Content-Security-Policy
+ *
+ * 画面は同一オリジンのスクリプトだけを実行する(インラインのスクリプト、eval、外部サイトのスクリプトは不可)。
+ * `style-src 'unsafe-inline'` は、Mermaid の図(SVG)が <style> 要素を含むために必要で、
+ * スクリプトの実行には影響しない。画像は自分自身と data: だけ(外部への送信に使わせない)。
+ */
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
 
 /**
  * パスを受け付けられないときの、HTTP ステータス
@@ -138,6 +161,8 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Hono {
   app.use('*', async (c, next) => {
     // 応答の種類を、ブラウザに中身から推測させない(JSON を HTML として解釈させない。S1-7)
     c.header('X-Content-Type-Options', 'nosniff');
+    c.header('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+    c.header('Referrer-Policy', 'no-referrer');
     // X-Forwarded-Host や Forwarded は見ない。信用するのは Host ヘッダだけ(C-1)
     const result = checkRequest(
       {
@@ -169,6 +194,18 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Hono {
   app.get('/api/reports', async (c) => c.json({ reports: await service.listReports() }));
   app.get('/api/tree', async (c) => c.json(await service.listTree(readPathQuery(c))));
   app.get('/api/file', async (c) => c.json(await service.getFile(readPathQuery(c))));
+
+  // 画面の静的ファイル(GET のみ。対応表に無いパスは 404)。API のルートより後に置く
+  const assets = deps.assets;
+  if (assets !== undefined) {
+    app.get('*', async (c) => {
+      const asset = await assets.read(c.req.path);
+      if (asset === undefined) return c.notFound();
+      c.header('Content-Type', asset.contentType);
+      c.header('Cache-Control', asset.cacheControl);
+      return c.body(asset.body as Uint8Array<ArrayBuffer>);
+    });
+  }
 
   // Hono の既定の onError は、例外を console.error でそのまま出す(メッセージとスタックに、
   // 実体のパスなどが入る)。ログと応答に出す内容を、ここで絞る(C-5、CLAUDE.md ルール8)

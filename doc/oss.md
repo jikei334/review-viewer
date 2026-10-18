@@ -17,6 +17,9 @@
 | @eslint/js | 10.0.1 | MIT | ESLint の JavaScript 用の推奨ルール |
 | typescript-eslint | 8.71.1 | MIT | ESLint の TypeScript 対応(パーサーと推奨ルール) |
 | @types/node | 22.20.5 | MIT | Node.js の型定義(対象の下限である Node.js 22 系に合わせている) |
+| @vitejs/plugin-react | 6.1.2 | MIT | Vite で React(JSX)をビルドするプラグイン(vite 8 に対応する版) |
+| @types/react | 19.3.0 | MIT | React の型定義 |
+| @types/react-dom | 19.3.0 | MIT | React DOM の型定義 |
 | playwright | 1.64.0 | Apache-2.0 | 画面のシステムテスト(`npm run e2e`)で、Chromium を自動操作するライブラリ。既存の Vitest の e2e から呼ぶ。テストランナーつきの `@playwright/test` は使わない |
 
 ## 実行時の依存(dependencies)
@@ -26,8 +29,17 @@
 | hono | 4.13.13 | MIT | Web サーバーのフレームワーク(ルーティング、ミドルウェア) |
 | @hono/node-server | 2.1.4 | MIT | Node.js の HTTP サーバーで Hono を動かすアダプタ |
 | ignore | 7.0.12 | MIT | `.gitignore` のパターンの判定(S1-5。除外されたファイルを一覧に出さず、取得も拒否するため。自前で実装しない) |
+| react | 19.3.1 | MIT | 画面の UI フレームワーク(T1-3) |
+| react-dom | 19.3.1 | MIT | React を DOM に描画する(T1-3) |
+| react-markdown | 10.1.0 | MIT | Markdown を React の要素に変換する。HTML の文字列を作って挿入しないので、XSS に強い(S1-2、S1-7) |
+| remark-gfm | 4.0.1 | MIT | GFM(表・タスクリスト・取り消し線・自動リンク)の拡張(S1-2) |
+| rehype-sanitize | 6.0.0 | MIT | 変換後の HTML を無害化する(S1-7) |
+| unified | 11.0.5 | MIT | Markdown の構文木を作るための土台。コードブロックの言語を、描画の前に調べるために直接使う(react-markdown の依存でもある) |
+| remark-parse | 11.0.0 | MIT | Markdown を構文木にする(上と同じ用途。react-markdown の依存でもある) |
+| mermaid | 12.2.0 | MIT | Mermaid の図の描画。`securityLevel: 'strict'` で使い、生成した SVG は Mermaid 自身が DOMPurify で無害化する(S1-3) |
+| shiki | 4.5.0 | MIT | コードブロックのシンタックスハイライト。トークンに分けて React が `span` で描画する(JavaScript 版の正規表現エンジンを使い、WASM は配信しない)(S1-2) |
 
-画面(React など)のライブラリは、それを使うタスクで追加する。
+画面のライブラリは、ビルド時に `dist/client` へ取り込まれる(実行時にサーバーが `node_modules` から読むことはない)。ただし、まとめて `dependencies` に置いている。コンテナで `--omit=dev` にするときは、画面のライブラリを `devDependencies` へ移してよいかを検討する。
 
 ## npm パッケージ以外で入手するもの(システムテスト用のブラウザ)
 
