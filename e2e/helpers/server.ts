@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readdir, rm, utimes } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, utimes } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -49,6 +49,8 @@ export interface StopResult {
   forced: boolean;
   /** シグナルを送ってから、プロセスが終了しポートが閉じるまでの時間(ミリ秒) */
   elapsedMs: number;
+  /** プロセスの終了コード(シグナルで終了した、または強制終了したときは null) */
+  exitCode: number | null;
 }
 
 /** 起動済みのテスト用サーバー */
@@ -69,9 +71,13 @@ export interface TestServer {
   /**
    * サーバーを停止して、一時ディレクトリを削除する(2回目以降の呼び出しは最初の結果を返す)
    * @param signal 送るシグナル。既定は SIGTERM
+   * @param serverOnly true なら、サーバー本体(`npm start` が起動した node プロセス)だけにシグナルを送る。
+   *   npm はサーバーの終了コードで終了するので、`exitCode` からサーバーの終了コードが分かる(Linux のみ)。
+   *   false(既定)なら、プロセスグループ全体に送る(端末で Ctrl+C を押したときの形)。
+   *   グループ全体に送ると npm 自身もシグナルで終了するため、サーバー本体の終了コードは観測できない
    * @returns 強制終了したかどうかと、終了までの時間
    */
-  stop: (signal?: StopSignal) => Promise<StopResult>;
+  stop: (signal?: StopSignal, serverOnly?: boolean) => Promise<StopResult>;
 }
 
 /** 起動オプション */
@@ -151,6 +157,32 @@ function signalGroup(proc: ChildProcess, signal: NodeJS.Signals): boolean {
     if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
     throw err;
   }
+}
+
+/**
+ * `npm start` のプロセスグループの中から、サーバー本体(node プロセス。npm 自身を除く)を探す(Linux のみ)
+ *
+ * @param leaderPid `npm start` のプロセス ID(プロセスグループ ID でもある)
+ * @returns サーバー本体と思われるプロセス ID の一覧
+ */
+async function findServerPids(leaderPid: number): Promise<number[]> {
+  const found: number[] = [];
+  for (const entry of await readdir('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === leaderPid) continue;
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+      // "pid (comm) state ppid pgrp ..." comm は括弧を含みうるので、最後の ')' の後ろを見る
+      const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      const comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+      const pgrp = Number(rest[2]);
+      if (pgrp === leaderPid && comm === 'node') found.push(pid);
+    } catch {
+      // 調べている間に終了したプロセスは無視してよい
+    }
+  }
+  return found;
 }
 
 /**
@@ -303,7 +335,7 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
    * @param signal 送るシグナル
    * @returns 停止の結果
    */
-  const doStop = async (signal: StopSignal): Promise<StopResult> => {
+  const doStop = async (signal: StopSignal, serverOnly: boolean): Promise<StopResult> => {
     const startedAt = Date.now();
     const exitedPromise = new Promise<void>((r) => {
       if (child.exitCode !== null || child.signalCode !== null) r();
@@ -314,7 +346,22 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
       hasExited = true;
     });
 
-    signalGroup(child, signal);
+    if (serverOnly && child.pid !== undefined) {
+      const targets = await findServerPids(child.pid);
+      if (targets.length === 0) {
+        throw new Error('サーバー本体のプロセスが見つかりません(/proc を調べました)');
+      }
+      for (const pid of targets) {
+        try {
+          process.kill(pid, signal);
+        } catch (err) {
+          // すでに終了済み(ESRCH)なら送る相手がいないだけ
+          if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+        }
+      }
+    } else {
+      signalGroup(child, signal);
+    }
 
     // 正常終了 = npm のプロセスが終わり、かつポートが閉じること
     const graceful = await waitUntil(
@@ -332,9 +379,10 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
         50
       );
     }
+    const exitCode = child.exitCode;
     runningProcesses.delete(child);
     await rm(tmpBase, { recursive: true, force: true });
-    return { forced: !graceful, elapsedMs };
+    return { forced: !graceful, elapsedMs, exitCode };
   };
 
   return {
@@ -343,8 +391,8 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
     repoDir,
     dataDir,
     logs: () => output,
-    stop: (signal: StopSignal = 'SIGTERM') => {
-      stopPromise ??= doStop(signal);
+    stop: (signal: StopSignal = 'SIGTERM', serverOnly = false) => {
+      stopPromise ??= doStop(signal, serverOnly);
       return stopPromise;
     },
   };

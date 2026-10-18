@@ -81,7 +81,7 @@ describe('C-1: Host header validation', () => {
   });
 
   // Host として構文が壊れている値。許可リスト外なので通してはいけない。
-  // HTTP サーバーが検証の手前で 400 を返す場合があるため、400 も許容する(SPEC の曖昧点として報告済み)
+  // 決定済み(2026-10-18, Q12): Host が無い・形式が不正なときは 403 または 400 のどちらでもよい
   const malformedHosts = [
     '127.0.0.1:{port}.evil.com',
     'localhost:{port}.evil.com',
@@ -470,26 +470,44 @@ describe('C-5: Secrets are not exposed', () => {
 // ─── C-6: SIGTERM / SIGINT で正常終了 ────────────────────────────────────────
 
 describe('C-6: Graceful shutdown', () => {
-  it.each(['SIGTERM', 'SIGINT'] as const)(
-    'C-6: %s を受けると、強制終了なしで 5 秒以内に終了し、ポートを閉じる',
+  // /proc でサーバー本体のプロセスを探すため、Linux でのみ実行する
+  it.skipIf(process.platform !== 'linux').each(['SIGTERM', 'SIGINT'] as const)(
+    'C-6: %s を受けると、5 秒以内に終了コード 0 で終了し、ポートを閉じる',
     async (signal) => {
       const server = await startTestServer();
       try {
         const before = await request(server, '/healthz');
         expect(before.status).toBe(200);
 
-        // stop() はシグナルを送り、プロセスが終了してポートが閉じるまでを待つ。
-        // 暫定: SPEC C-6 は終了までの秒数を指定していないため、ヘルパーの stop() は 5 秒を仮定している。
-        // 別の上限が必要な場合は e2e/helpers/server.ts の doStop 内のタイムアウト値を変更し、
-        // SPEC に根拠となる秒数を追記すること
-        const result = await server.stop(signal);
+        // stop() はシグナルを送り、プロセスが終了してポートが閉じるまでを待つ(上限 5 秒)。
+        // SPEC C-6(2026-10-18 決定): 正常終了 = シグナルから 5 秒以内に、終了コード 0 で終了すること
+        // サーバー本体の node プロセスだけにシグナルを送る。npm はサーバーの終了コードで終了するので、
+        // それを観測できる(グループ全体に送ると npm 自身もシグナルで死に、終了コードが見えなくなる)
+        const result = await server.stop(signal, true);
         expect(result.forced, `${signal} では終了せず、SIGKILL が必要だった`).toBe(false);
+        expect(result.elapsedMs, `${signal} から終了までに ${result.elapsedMs}ms かかった`).toBeLessThanOrEqual(5_000);
+        expect(result.exitCode, `${signal} での終了コードが 0 ではない。出力:\n${server.logs()}`).toBe(0);
 
         // 終了後は、接続を受け付けない
         const closed = await waitUntil(async () => !(await canConnect('127.0.0.1', server.port, 500)), 2_000);
         expect(closed).toBe(true);
       } finally {
         // 途中で失敗しても、プロセスと一時ディレクトリを残さない(stop は2回呼んでも最初の結果を返す)
+        await server.stop();
+      }
+    }
+  );
+
+  it.each(['SIGTERM', 'SIGINT'] as const)(
+    'C-6: %s をプロセスグループ全体(端末の Ctrl+C と同じ届き方)に受けても、5 秒以内に終了し、ポートを閉じる',
+    async (signal) => {
+      const server = await startTestServer();
+      try {
+        const result = await server.stop(signal);
+        expect(result.forced, `${signal} では終了せず、SIGKILL が必要だった`).toBe(false);
+        expect(result.elapsedMs).toBeLessThanOrEqual(5_000);
+        expect(await canConnect('127.0.0.1', server.port, 500)).toBe(false);
+      } finally {
         await server.stop();
       }
     }
