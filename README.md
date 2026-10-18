@@ -26,6 +26,7 @@ npx playwright install --with-deps chromium
 ```
 
 - `--with-deps` は、ブラウザの実行に必要な OS のパッケージも合わせて入れる(Linux でのみ意味を持つ)
+- 開発コンテナ(`/workspace/vibe_coding/docker/Dockerfile`)では、OS のパッケージをイメージに入れてある(手順 3.6)。その場合は `npx playwright install chromium`(`--with-deps` なし、sudo 不要)でよい。`playwright` の版を上げたら、Dockerfile の `PLAYWRIGHT_VERSION` も揃える
 - ヘッドレスの起動だけ必要な場合は `--only-shell` を付けると、フルの Chromium よりダウンロードサイズが小さい
 - ブラウザの保存先は、既定でリポジトリの外(`~/.cache/ms-playwright/`)
 - **`playwright` の版を上げたら、ブラウザも入れ直す。** 版がずれると、ブラウザの実行ファイルが見つからずテストが失敗する
