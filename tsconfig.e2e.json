@@ -1,0 +1,13 @@
+{
+  // システムテスト(e2e/)の型検査用。出力はしない。
+  // Playwright の page.evaluate(() => document.title) のように、ブラウザの中で動く関数を書くので、
+  // lib に DOM を足す。それ以外の設定は tsconfig.json(Node.js 側)と同じ。
+  // サーバー側(tsconfig.json)には DOM を入れないので、設定を分けている
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["e2e/**/*.ts"],
+  // e2e/fixtures はテストデータ(フィクスチャのリポジトリ)、e2e/.tmp はテストの一時ファイルなので対象外
+  "exclude": ["e2e/fixtures", "e2e/.tmp", "dist", "node_modules"]
+}

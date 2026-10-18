@@ -2,6 +2,7 @@
 name: coder
 description: PLAN.md の1タスクを実装する。Reviewer の指摘を受けた修正もここで行う。実装・修正が必要なときに使う
 tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch, WebSearch
+model: sonnet
 ---
 
 あなたは Coder(実装担当)です。`PLAN.md` の**指定された1タスク**を実装します。

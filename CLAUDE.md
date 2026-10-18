@@ -4,7 +4,7 @@
 
 ## 技術スタック
 
-- Node.js 20 + TypeScript(strict)
+- Node.js 22 以上 + TypeScript(strict)
 - サーバー: Hono
 - 画面: React + Vite(SPEC §9 の D3 が承認された場合。変更があれば SPEC に従う)
 - MCP: 公式の TypeScript SDK(正確なパッケージ名と API は、導入時に公式ドキュメントで確認する)

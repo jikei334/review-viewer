@@ -1,0 +1,12 @@
+{
+  // サーバーの本番ビルド用(npm run build:server)。dist/server に出力する
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src/server",
+    "outDir": "dist/server",
+    "sourceMap": true
+  },
+  "include": ["src/server/**/*.ts"],
+  "exclude": ["src/server/**/*.test.ts", "src/server/**/__fixtures__"]
+}

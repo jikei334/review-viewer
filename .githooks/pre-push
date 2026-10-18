@@ -1,0 +1,42 @@
+#!/bin/sh
+# push する前に、送信されるコミットを gitleaks でシークレット検出する pre-push フック。
+# 有効化: git config core.hooksPath .githooks(npm install 時に prepare スクリプトが自動で設定する)
+#
+# 引数: $1 = リモート名、$2 = リモートの URL(git が渡す。ここでは使わない)
+# 標準入力: 1 行ごとに "<ローカル ref> <ローカル SHA> <リモート ref> <リモート SHA>"
+# 返り値: 0 = push を続行、0 以外 = push を中止
+set -eu
+
+zero_sha=0000000000000000000000000000000000000000
+
+# gitleaks が無いときは、検査を飛ばさずに push を止める(握りつぶさない)
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-push: gitleaks が見つかりません。インストールしてから push してください。" >&2
+  echo "pre-push: https://github.com/gitleaks/gitleaks/releases" >&2
+  exit 1
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # ブランチの削除は、送るコミットが無いので検査しない
+  if [ "$local_sha" = "$zero_sha" ]; then
+    continue
+  fi
+
+  if [ "$remote_sha" = "$zero_sha" ]; then
+    # 新しいブランチ: どのリモートにもまだ無いコミットをすべて検査する(初回 push では履歴全体になる)
+    range="$local_sha --not --remotes"
+  else
+    # 既存ブランチの更新: リモートの先端から追加されるコミットだけを検査する
+    range="$remote_sha..$local_sha"
+  fi
+
+  echo "pre-push: gitleaks で $local_ref -> $remote_ref を検査しています..." >&2
+  # --redact: 検出した値そのものを端末に出さない
+  if ! gitleaks git --redact --no-banner --log-opts="$range" .; then
+    echo "pre-push: シークレットの可能性があるものが見つかったため、push を中止しました。" >&2
+    echo "pre-push: 誤検出の場合は、.gitleaksignore に fingerprint を追加してください。" >&2
+    exit 1
+  fi
+done
+
+exit 0
