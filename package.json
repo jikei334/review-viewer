@@ -8,7 +8,7 @@
     "node": "^22.13.0 || >=24"
   },
   "scripts": {
-    "dev": "vite",
+    "dev": "npm run build:server && node dist/server/dev.js",
     "build": "npm run clean && npm run build:server && npm run build:client",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build:server": "tsc -p tsconfig.build.json",

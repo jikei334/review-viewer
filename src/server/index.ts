@@ -8,6 +8,8 @@
 import type { Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
+import { RepoDirCancelledError } from './repo-dir.js';
+import { resolveRepoDirFromProcess } from './repo-dir-io.js';
 import {
   closeServer,
   createShutdownHandler,
@@ -37,7 +39,7 @@ function log(message: string): void {
  * @throws 設定が不正なとき、または待ち受けを始められなかったとき
  */
 async function main(): Promise<void> {
-  const config = loadConfig(process.env);
+  const baseConfig = loadConfig(process.env);
   // 起動したサーバーの入れ物(待ち受けを始めるまでは空)
   const running: { server?: Server } = {};
 
@@ -49,6 +51,20 @@ async function main(): Promise<void> {
     exit: (code) => process.exit(code),
   });
   registerShutdownSignals(process, shutdown);
+
+  // 対象リポジトリは、待ち受けを始める前に決めて検証する(SPEC §2.5、S1-10)。
+  // 入力の待機中に届いたシグナルも、上で登録したハンドラが正常終了させる
+  let repoDir: string;
+  try {
+    repoDir = await resolveRepoDirFromProcess();
+  } catch (err: unknown) {
+    if (err instanceof RepoDirCancelledError) {
+      log(`Review Viewer: ${err.message}。終了します`);
+      process.exit(0);
+    }
+    throw err;
+  }
+  const config = { ...baseConfig, repoDir };
 
   // 画面のビルド成果物が無ければ、ここで失敗させる(画面が空のまま動いていると気づけないため)
   const assets = await StaticAssets.load(CLIENT_DIR);
