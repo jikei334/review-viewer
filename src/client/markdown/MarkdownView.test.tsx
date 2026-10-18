@@ -158,3 +158,27 @@ describe('S1-7: HTML・スクリプトの無害化(XSS のケース)', () => {
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
   });
 });
+
+describe('S1-8: path:line のリンク', () => {
+  it('S1-8: 本文中の path:line が a 要素になり、href はレポートを保ったまま行を指す', () => {
+    const html = renderToStaticMarkup(
+      <MarkdownView source="- src/example.ts:1 を参照" highlighter={PLAIN_HIGHLIGHTER} reportPath="reports/r.md" />
+    );
+    expect(html).toContain('<a href="#/report/reports%2Fr.md?src=src%2Fexample.ts&amp;line=1">src/example.ts:1</a>');
+  });
+  it('S1-8: インラインコードの参照もリンクになり、コードブロックの中は変換しない', () => {
+    const html = render('`a/b.ts:3`\n\n```\nc/d.ts:4\n```\n');
+    expect(html).toContain('<a href="#/?src=a%2Fb.ts&amp;line=3"><code>a/b.ts:3</code></a>');
+    expect(html).not.toContain('c%2Fd.ts');
+  });
+  it('S1-8: 行番号 0 と、URL の中のコロンは変換しない', () => {
+    const html = render('foo.ts:0 と https://example.com/a.ts:3');
+    expect(html).not.toContain('src=foo.ts');
+    expect(html).not.toContain('src=a.ts');
+    expect(html.match(/<a /g)).toHaveLength(1); // 自動リンクの1つだけ
+  });
+  it('S1-7: 文書中の javascript: のリンクは、path:line を足しても無害化されたまま', () => {
+    const html = render('[x](javascript:alert(1)) src/a.ts:2');
+    expect(html).not.toContain('javascript:');
+  });
+});

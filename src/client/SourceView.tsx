@@ -10,7 +10,7 @@ import { prepareHighlighter } from './markdown/highlight.js';
 import { languageForPath, shouldHighlight, splitLines } from './source-lines.js';
 
 /** 表示の状態 */
-type ViewState =
+export type ViewState =
   | { readonly status: 'loading' }
   | { readonly status: 'error'; readonly message: string }
   | { readonly status: 'unreadable'; readonly message: string }
@@ -27,7 +27,7 @@ type ViewState =
  * @param path リポジトリ相対パス
  * @returns 表示の状態(loading 以外)
  */
-async function loadSource(path: string): Promise<ViewState> {
+export async function loadSource(path: string): Promise<ViewState> {
   let file;
   try {
     file = await fetchFile(path);

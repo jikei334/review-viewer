@@ -16,6 +16,7 @@ import remarkGfm from 'remark-gfm';
 import { MERMAID_LANGUAGE } from './code-languages.js';
 import type { CodeHighlighter } from './highlight.js';
 import { MermaidBlock } from './MermaidBlock.js';
+import { remarkPathLine } from './path-line.js';
 import { SANITIZE_SCHEMA } from './sanitize-schema.js';
 
 /** コードブロックの内容 */
@@ -95,6 +96,8 @@ export interface MarkdownViewProps {
   readonly source: string;
   /** コードブロックに使う、読み込み済みのハイライタ */
   readonly highlighter: CodeHighlighter;
+  /** いま開いているレポートのパス。`path:line` のリンクが、このレポートを開いたままにするために使う */
+  readonly reportPath?: string | null;
 }
 
 /**
@@ -103,7 +106,7 @@ export interface MarkdownViewProps {
  * @param props 本文とハイライタ
  * @returns 変換した要素
  */
-export function MarkdownView({ source, highlighter }: MarkdownViewProps) {
+export function MarkdownView({ source, highlighter, reportPath = null }: MarkdownViewProps) {
   const components: Components = {
     pre({ children }) {
       const block = readCodeBlock(children);
@@ -114,7 +117,7 @@ export function MarkdownView({ source, highlighter }: MarkdownViewProps) {
   };
   return (
     <Markdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, [remarkPathLine, { report: reportPath }]]}
       rehypePlugins={[[rehypeSanitize, SANITIZE_SCHEMA]]}
       components={components}
     >

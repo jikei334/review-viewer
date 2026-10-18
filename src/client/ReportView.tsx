@@ -83,7 +83,7 @@ export function ReportView({ path }: ReportViewProps) {
   }
   return (
     <article className="markdown-body" data-testid="report-content">
-      <MarkdownView source={state.source} highlighter={state.highlighter} />
+      <MarkdownView source={state.source} highlighter={state.highlighter} reportPath={path} />
     </article>
   );
 }
