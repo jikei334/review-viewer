@@ -1,6 +1,6 @@
 /**
  * e2e 表示まわりのテスト(ステージ1)
- * 対象基準: S1-2(GFM の変換)、S1-3(Mermaid)、S1-7(HTML・スクリプトの無害化)、S1-8(path:line リンク)
+ * 対象基準: S1-2(GFM の変換)、S1-3(Mermaid)、S1-7(HTML・スクリプトの無害化)、S1-8(path:line リンク)、S1-11(ソースツリーとファイル表示)
  *
  * SPEC §2.2 の Web API には、Markdown を HTML に変換して返すエンドポイントが無い。
  * 変換と無害化の結果は、画面(ブラウザ)でしか観測できない。
@@ -561,11 +561,9 @@ describe('S1-8: path:line links', () => {
 
 // ─── ソースのツリー表示(SPEC §4.1 の source-tree / source-line-number) ────────
 
-// 基準 ID について: SPEC §4 の「機能」に「ソースのツリー表示とファイル表示(行番号つき)」はあるが、
-// 専用の受け入れ基準は無い(S1-9 は手動確認なので、ブラウザテストの ID には使わない)。
-// ツリーは、S1-8 が前提にするソース表示エリア(source-view / source-line)へ、
-// リンク以外の経路で到達する入口であるため、S1-8 の ID を付ける。
-describe('S1-8: ソースのツリーとファイル表示(行番号つき)', () => {
+// 基準 ID: S1-11(ソースツリーで、ディレクトリを開閉でき、ファイルを選ぶと
+// ソース表示エリアに行番号つきで開く)。
+describe('S1-11: ソースのツリーとファイル表示(行番号つき)', () => {
   /**
    * トップページを開き、ソースツリーが表示されるまで待つ
    * @param page Playwright の Page
@@ -578,7 +576,7 @@ describe('S1-8: ソースのツリーとファイル表示(行番号つき)', ()
     return tree;
   }
 
-  it('S1-8: ツリーのディレクトリを開き、ファイルを開くと、ソース表示エリアに内容が表示される【要ブラウザ】', async () => {
+  it('S1-11: ツリーのディレクトリを開き、ファイルを開くと、ソース表示エリアに内容が表示される【要ブラウザ】', async () => {
     const session = await createSession(browser!);
     try {
       const tree = await openTree(session.page);
@@ -605,7 +603,7 @@ describe('S1-8: ソースのツリーとファイル表示(行番号つき)', ()
     }
   });
 
-  it('S1-8: ソース表示エリアの各行に、1 始まりの行番号が表示される【要ブラウザ】', async () => {
+  it('S1-11: ソース表示エリアの各行に、1 始まりの行番号が表示される【要ブラウザ】', async () => {
     const session = await createSession(browser!);
     try {
       const tree = await openTree(session.page);
@@ -629,7 +627,7 @@ describe('S1-8: ソースのツリーとファイル表示(行番号つき)', ()
     }
   });
 
-  it('S1-8: ディレクトリの button をもう一度クリックすると閉じ、中のファイルが見えなくなる【要ブラウザ】', async () => {
+  it('S1-11: ディレクトリの button をもう一度クリックすると閉じ、中のファイルが見えなくなる【要ブラウザ】', async () => {
     const session = await createSession(browser!);
     try {
       const tree = await openTree(session.page);
