@@ -11,7 +11,7 @@
  * - 「拒否」は、4xx であることと、ファイルの中身(目印の文字列)が応答に含まれないことで確かめる
  */
 
-import { mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, symlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDeniedFiles, listDeniedFiles } from './helpers/fixtures.js';
@@ -78,7 +78,7 @@ describe('S1-1: GET /api/reports', () => {
 
   it('S1-1: 新しい順に並ぶ', async () => {
     // フィクスチャは、ファイル名の日付と更新日時を一致させてある(helpers/server.ts)。
-    // 「新しい順」が、どちらを基準にしていても同じ並びになる
+    // 食い違う場合と同順位の場合は、下の describe で検証する
     const res = await request(server, '/api/reports');
     expect(res.status).toBe(200);
     const positions = REPORTS_NEWEST_FIRST.map((name) => res.text.indexOf(name));
@@ -96,6 +96,63 @@ describe('S1-1: GET /api/reports', () => {
     expect(res.text).toContain('2026-10-12-feature.md');
     expect(res.text).not.toContain('2026-11-01-not-markdown');
     expect(res.text).not.toContain('2026-11-02-outside-reports');
+  });
+});
+
+// 決定済み(2026-10-18, Q3): 「新しい順」は更新日時の新しい順。同じなら、ファイル名の降順
+describe('S1-1: GET /api/reports の並び順(更新日時、同じならファイル名の降順)', () => {
+  let server: TestServer;
+  // 名前の順と更新日時の順が食い違うレポート
+  const NAME_LATE_MTIME_OLD = '2027-01-01-name-late-mtime-old.md';
+  const NAME_EARLY_MTIME_NEW = '2020-01-01-name-early-mtime-new.md';
+  // 更新日時がすべて同じレポート
+  const TIE_A = '2026-03-01-tie-a.md';
+  const TIE_B = '2026-03-01-tie-b.md';
+  const TIE_C = '2026-03-01-tie-c.md';
+  const TIES = [TIE_A, TIE_B, TIE_C];
+
+  beforeAll(async () => {
+    server = await startTestServer({
+      setup: async (repoDir) => {
+        const old = new Date('2019-01-01T00:00:00Z');
+        const recent = new Date('2031-01-01T00:00:00Z');
+        const same = new Date('2029-06-01T00:00:00Z');
+        const put = async (name: string, when: Date): Promise<void> => {
+          const full = join(repoDir, 'reports', name);
+          await writeFile(full, `# ${name}\n`);
+          await utimes(full, when, when);
+        };
+        await put(NAME_LATE_MTIME_OLD, old);
+        await put(NAME_EARLY_MTIME_NEW, recent);
+        // 作成順をファイル名の昇順にしない(作成順に依存した並びと区別するため)
+        for (const name of [TIE_B, TIE_C, TIE_A]) await put(name, same);
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await stopIfStarted(server);
+  });
+
+  it('S1-1: 更新日時の順とファイル名の順が食い違うとき、更新日時の新しい順になる', async () => {
+    const res = await request(server, '/api/reports');
+    expect(res.status).toBe(200);
+    const newer = res.text.indexOf(NAME_EARLY_MTIME_NEW);
+    const older = res.text.indexOf(NAME_LATE_MTIME_OLD);
+    expect(newer, `${NAME_EARLY_MTIME_NEW} が一覧に無い`).toBeGreaterThanOrEqual(0);
+    expect(older, `${NAME_LATE_MTIME_OLD} が一覧に無い`).toBeGreaterThanOrEqual(0);
+    expect(newer, '更新日時が新しいほうが先に来ていない').toBeLessThan(older);
+  });
+
+  it('S1-1: 更新日時が同じとき、ファイル名の降順になる', async () => {
+    const res = await request(server, '/api/reports');
+    expect(res.status).toBe(200);
+    for (const name of TIES) {
+      expect(res.text.indexOf(name), `${name} が一覧に無い`).toBeGreaterThanOrEqual(0);
+    }
+    // ファイル名の降順(c, b, a)になるはず
+    expect(res.text.indexOf(TIE_C)).toBeLessThan(res.text.indexOf(TIE_B));
+    expect(res.text.indexOf(TIE_B)).toBeLessThan(res.text.indexOf(TIE_A));
   });
 });
 
@@ -436,6 +493,61 @@ describe('S1-6: Large and binary files do not return their content', () => {
     expect(bodyContains(res.text, 'export function increment')).toBe(true);
   });
 
-  // SPEC の曖昧点(人間への質問として報告済み): 「1MB」が 1,000,000 バイトか 1,048,576 バイトか
-  it.todo('S1-6: ちょうど上限のファイルは本文が返り、上限を 1 バイト超えると返らない(上限の定義が未確定)');
+  // 決定済み(2026-10-18, Q5): 1MB = 1,048,576 バイト。ちょうどなら本文あり、1 バイト超なら本文なし
+  describe('境界(1,048,576 バイト)', () => {
+    let boundary: TestServer;
+    const LIMIT = 1_048_576;
+    const EXACT_MARKER = 'E2E_EXACT_LIMIT_MARKER';
+    const OVER_MARKER = 'E2E_ONE_BYTE_OVER_MARKER';
+
+    /**
+     * 先頭に目印を置き、指定のバイト数になるテキストを作る(実行時に生成し、コミットしない)
+     * @param marker 先頭の目印
+     * @param size 全体のバイト数
+     * @returns ASCII だけのテキスト(行は 100 バイト以下)
+     */
+    const makeText = (marker: string, size: number): string => {
+      const head = `${marker}\n`;
+      const body = 'z'.repeat(79) + '\n';
+      const rest = size - head.length;
+      const full = Math.floor(rest / body.length);
+      const remainder = rest - full * body.length;
+      // 端数は最後の行の長さで調整する(改行は端数の末尾に付ける)
+      const tail = remainder > 0 ? 'z'.repeat(remainder - 1) + '\n' : '';
+      const text = head + body.repeat(full) + tail;
+      return text;
+    };
+
+    beforeAll(async () => {
+      boundary = await startTestServer({
+        setup: async (repoDir) => {
+          const exact = makeText(EXACT_MARKER, LIMIT);
+          const over = makeText(OVER_MARKER, LIMIT + 1);
+          if (Buffer.byteLength(exact) !== LIMIT || Buffer.byteLength(over) !== LIMIT + 1) {
+            throw new Error('フィクスチャのサイズ計算が誤っている');
+          }
+          await writeFile(join(repoDir, 'exact-limit.txt'), exact);
+          await writeFile(join(repoDir, 'one-over-limit.txt'), over);
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await stopIfStarted(boundary);
+    });
+
+    it('S1-6: ちょうど 1,048,576 バイトのファイルは、本文が返る', async () => {
+      const res = await request(boundary, '/api/file?path=exact-limit.txt');
+      expect(res.status).toBe(200);
+      expect(bodyContains(res.text, EXACT_MARKER)).toBe(true);
+    });
+
+    it('S1-6: 1,048,577 バイトのファイルは、本文が返らない', async () => {
+      const res = await request(boundary, '/api/file?path=one-over-limit.txt');
+      // 暫定: SPEC §2.2 はステータスコードを指定していないため、5xx でなければ受け入れる
+      expect(res.status, `サーバーエラー(${res.status})になった`).toBeLessThan(500);
+      expect(bodyContains(res.text, OVER_MARKER), '上限を超えたファイルの本文が応答に含まれている').toBe(false);
+      expect(res.body.length, '応答が上限を超えるファイルと同じ大きさ').toBeLessThan(LIMIT);
+    });
+  });
 });
