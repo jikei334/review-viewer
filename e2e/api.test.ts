@@ -5,16 +5,17 @@
  *
  * SPEC §2.2 と §4 の受け入れ基準だけを根拠とする。src/ は読まない。
  *
- * SPEC は、応答の JSON の形(フィールド名)と、拒否するときのステータスコードを定めていない。
- * そのため、次の方針で検証する。
+ * SPEC は、応答の JSON の形(フィールド名)を定めていない。次の方針で検証する。
  * - 一覧に載っているかどうかは、JSON に含まれる文字列を形に依存せずに調べる(helpers/http.ts の listsName)
- * - 「拒否」は、4xx であることと、ファイルの中身(目印の文字列)が応答に含まれないことで確かめる
+ * - 「拒否」は、SPEC の「拒否の応答」(決定済み 2026-10-18, Q4)に従い、404 で、
+ *   ファイルの中身(目印の文字列)が応答に含まれないことで確かめる。
+ *   形式からリポジトリ外と分かるパス(../ や絶対パス)は 400 でもよい
  */
 
 import { mkdir, symlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createDeniedFiles, listDeniedFiles } from './helpers/fixtures.js';
+import { createDeniedFiles, listDeniedFiles, VISIBLE_DESPITE_GITIGNORE } from './helpers/fixtures.js';
 import { bodyContains, listsName, request, tryParseJson, type HttpResult } from './helpers/http.js';
 import { startTestServer, stopIfStarted, type TestServer } from './helpers/server.js';
 
@@ -28,22 +29,41 @@ const REPORTS_NEWEST_FIRST = [
 ];
 
 /**
- * 応答が「拒否」であることを確かめる(4xx で、禁止された中身を含まない)
+ * 応答が、存在しないパスと同じ 404 の「拒否」であることを確かめる
+ * (SPEC の「拒否の応答」。決定済み 2026-10-18, Q4: 拒否したパスは 404 で返す)
  *
  * @param res 応答
  * @param label 失敗時に表示する、リクエストの説明
  * @param forbidden 応答に含まれてはいけない文字列
  * @returns なし(満たさなければ、その場でテストが失敗する)
  */
-function expectRejected(res: HttpResult, label: string, forbidden: string[] = []): void {
-  expect(res.status, `${label} が ${res.status} を返した(4xx で拒否されるべき)`).toBeGreaterThanOrEqual(400);
-  expect(res.status, `${label} が ${res.status} を返した(4xx で拒否されるべき)`).toBeLessThan(500);
+function expectNotFound(res: HttpResult, label: string, forbidden: string[] = []): void {
+  expect(res.status, `${label} が ${res.status} を返した(404 であるべき)`).toBe(404);
+  for (const text of forbidden) {
+    expect(bodyContains(res.text, text), `${label} の応答に「${text}」が含まれている`).toBe(false);
+  }
+}
+
+/**
+ * 形式からリポジトリ外と分かるパスへの応答が、400 または 404 の「拒否」であることを確かめる
+ * (SPEC の「拒否の応答」。決定済み 2026-10-18, Q4: 形式から外と分かるパスは 400 でよい)
+ *
+ * @param res 応答
+ * @param label 失敗時に表示する、リクエストの説明
+ * @param forbidden 応答に含まれてはいけない文字列
+ * @returns なし(満たさなければ、その場でテストが失敗する)
+ */
+function expectOutsideRejected(res: HttpResult, label: string, forbidden: string[] = []): void {
+  expect([400, 404], `${label} が ${res.status} を返した(400 または 404 であるべき)`).toContain(res.status);
   for (const text of forbidden) {
     expect(bodyContains(res.text, text), `${label} の応答に「${text}」が含まれている`).toBe(false);
   }
 }
 
 // ─── S1-1: GET /api/reports ───────────────────────────────────────────────────
+
+/** 一覧に出てはいけない、レポートの見出し(タイトル)の目印 */
+const HEADING_PROBE = 'E2E_REPORT_HEADING_MUST_NOT_BE_LISTED';
 
 describe('S1-1: GET /api/reports', () => {
   let server: TestServer;
@@ -54,6 +74,11 @@ describe('S1-1: GET /api/reports', () => {
         // reports/*.md に当てはまらないファイル
         await writeFile(join(repoDir, 'reports/2026-11-01-not-markdown.txt'), 'Markdown ではない\n');
         await writeFile(join(repoDir, '2026-11-02-outside-reports.md'), '# reports/ の外にある Markdown\n');
+        // 決定済み(2026-10-18, Q10): reports/ の直下だけが対象で、サブディレクトリの .md は含まれない
+        await mkdir(join(repoDir, 'reports/archive'), { recursive: true });
+        await writeFile(join(repoDir, 'reports/archive/2026-11-03-nested-report.md'), '# サブディレクトリのレポート\n');
+        // 決定済み(2026-10-18, Q8): 一覧にはレポートの見出し(タイトル)を含めない
+        await writeFile(join(repoDir, 'reports/2026-11-04-heading-probe.md'), `# ${HEADING_PROBE}\n\n本文\n`);
       },
     });
   });
@@ -96,6 +121,23 @@ describe('S1-1: GET /api/reports', () => {
     expect(res.text).toContain('2026-10-12-feature.md');
     expect(res.text).not.toContain('2026-11-01-not-markdown');
     expect(res.text).not.toContain('2026-11-02-outside-reports');
+  });
+
+  it('S1-1: reports/ のサブディレクトリの .md は含まれない(直下だけが対象)', async () => {
+    const res = await request(server, '/api/reports');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('2026-10-12-feature.md');
+    expect(res.text).not.toContain('2026-11-03-nested-report');
+  });
+
+  it('S1-1: 一覧にレポートの見出し(タイトル)を含めない', async () => {
+    const res = await request(server, '/api/reports');
+    expect(res.status).toBe(200);
+    // 一覧に載っていること(載っていなければ、見出しが無いことの検証にならない)
+    expect(res.text).toContain('2026-11-04-heading-probe.md');
+    expect(res.text).not.toContain(HEADING_PROBE);
+    // フィクスチャ XSS レポートの見出し(<img ...> を含む)も出ない
+    expect(res.text).not.toContain('XSS の確認');
   });
 });
 
@@ -212,19 +254,19 @@ describe('S1-4: Paths outside the repository are rejected', () => {
 
   it.each(fileTraversals)('S1-4: GET /api/file は %s を拒否する', async (_label, query) => {
     const res = await request(server, `/api/file?path=${query}`);
-    expectRejected(res, `GET /api/file?path=${query}`, [OUTSIDE_SENTINEL, 'root:x:0:0']);
+    expectOutsideRejected(res, `GET /api/file?path=${query}`, [OUTSIDE_SENTINEL, 'root:x:0:0']);
   });
 
   it('S1-4: GET /api/file は絶対パス(/etc/passwd)を拒否する', async () => {
     for (const query of ['/etc/passwd', '%2Fetc%2Fpasswd', '//etc/passwd', 'file:///etc/passwd']) {
       const res = await request(server, `/api/file?path=${query}`);
-      expectRejected(res, `GET /api/file?path=${query}`, ['root:x:0:0']);
+      expectOutsideRejected(res, `GET /api/file?path=${query}`, ['root:x:0:0']);
     }
   });
 
   it('S1-4: GET /api/file は絶対パス(リポジトリの外にあるファイル)を拒否する', async () => {
     const res = await request(server, `/api/file?path=${encodeURIComponent(outsideFile)}`);
-    expectRejected(res, 'GET /api/file?path=<リポジトリ外の絶対パス>', [OUTSIDE_SENTINEL]);
+    expectOutsideRejected(res, 'GET /api/file?path=<リポジトリ外の絶対パス>', [OUTSIDE_SENTINEL]);
   });
 
   const outsideLinks: Array<[label: string, path: string]> = [
@@ -239,7 +281,8 @@ describe('S1-4: Paths outside the repository are rejected', () => {
     'S1-4: GET /api/file は、リポジトリの外を指すシンボリックリンク(%s)を拒否する',
     async (_label, path) => {
       const res = await request(server, `/api/file?path=${encodeURIComponent(path)}`);
-      expectRejected(res, `GET /api/file?path=${path}`, [OUTSIDE_SENTINEL]);
+      // リンクの名前は、形式からは外と分からない。存在しないパスと同じ 404
+      expectNotFound(res, `GET /api/file?path=${path}`, [OUTSIDE_SENTINEL]);
     }
   );
 
@@ -254,20 +297,35 @@ describe('S1-4: Paths outside the repository are rejected', () => {
 
   it.each(treeTraversals)('S1-4: GET /api/tree は %s を拒否する', async (_label, query) => {
     const res = await request(server, `/api/tree?path=${query}`);
-    expectRejected(res, `GET /api/tree?path=${query}`, [OUTSIDE_INNER_NAME, 'outside-secret.txt']);
+    expectOutsideRejected(res, `GET /api/tree?path=${query}`, [OUTSIDE_INNER_NAME, 'outside-secret.txt']);
   });
 
   it('S1-4: GET /api/tree は絶対パスを拒否する', async () => {
     const etc = await request(server, '/api/tree?path=/etc');
-    expectRejected(etc, 'GET /api/tree?path=/etc', ['passwd']);
+    expectOutsideRejected(etc, 'GET /api/tree?path=/etc', ['passwd']);
 
     const outside = await request(server, `/api/tree?path=${encodeURIComponent(outsideDir)}`);
-    expectRejected(outside, 'GET /api/tree?path=<リポジトリ外の絶対パス>', [OUTSIDE_INNER_NAME]);
+    expectOutsideRejected(outside, 'GET /api/tree?path=<リポジトリ外の絶対パス>', [OUTSIDE_INNER_NAME]);
   });
 
   it('S1-4: GET /api/tree は、リポジトリの外を指すシンボリックリンク(ディレクトリ)を拒否する', async () => {
     const res = await request(server, '/api/tree?path=link-dir');
-    expectRejected(res, 'GET /api/tree?path=link-dir', [OUTSIDE_INNER_NAME]);
+    expectNotFound(res, 'GET /api/tree?path=link-dir', [OUTSIDE_INNER_NAME]);
+  });
+
+  // 決定済み(2026-10-18, Q11): リポジトリの外を指すシンボリックリンクは、/api/tree の一覧にも出さない
+  it('S1-4: GET /api/tree の一覧に、リポジトリの外を指すシンボリックリンクが出ない', async () => {
+    const root = await request(server, '/api/tree?path=');
+    expect(root.status).toBe(200);
+    // 一覧が空では検証にならない
+    expect(listsName(root.text, 'src'), 'ルートの一覧に src が無い').toBe(true);
+    for (const name of ['link-abs-file.txt', 'link-rel-file.txt', 'link-dir', 'link-chain.txt']) {
+      expect(listsName(root.text, name), `ルートの一覧に ${name} が載っている`).toBe(false);
+    }
+    const src = await request(server, '/api/tree?path=src');
+    expect(src.status).toBe(200);
+    expect(listsName(src.text, 'example.ts'), 'src の一覧に example.ts が無い').toBe(true);
+    expect(listsName(src.text, 'link-in-subdir.ts'), 'src の一覧に link-in-subdir.ts が載っている').toBe(false);
   });
 
   it('S1-4: リポジトリ内の通常のパスは、/api/file と /api/tree で取得できる', async () => {
@@ -315,7 +373,28 @@ describe('S1-5: Secret files and .gitignore targets are hidden and rejected', ()
 
   it.each(denied)('S1-5: GET /api/file は $path を拒否する($reason)', async ({ path, sentinel }) => {
     const res = await request(server, `/api/file?path=${encodeURIComponent(path)}`);
-    expectRejected(res, `GET /api/file?path=${path}`, [sentinel]);
+    // 決定済み(2026-10-18, Q4): 拒否は、存在しないパスと同じ 404
+    expectNotFound(res, `GET /api/file?path=${path}`, [sentinel]);
+  });
+
+  // 決定済み(2026-10-18, Q4): 拒否の理由(秘密ファイルか、.gitignore の対象か)を応答で区別しない
+  it.each([
+    ['.env(秘密ファイル)', '.env'],
+    ['.env.example(秘密ファイル。.gitignore の否定パターンつき)', '.env.example'],
+    ['excluded-by-git.txt(.gitignore の対象)', 'excluded-by-git.txt'],
+    ['subdir/sub-ignored.txt(サブディレクトリの .gitignore の対象)', 'subdir/sub-ignored.txt'],
+    ['.git/config', '.git/config'],
+  ])('S1-5: GET /api/file の拒否の応答は、存在しないパスの応答と区別できない(%s)', async (_label, path) => {
+    const missingPath = 'no-such-file-e2e.txt';
+    const res = await request(server, `/api/file?path=${encodeURIComponent(path)}`);
+    const missing = await request(server, `/api/file?path=${encodeURIComponent(missingPath)}`);
+    expect(missing.status, '存在しないパスが 404 を返さない').toBe(404);
+    expect(res.status).toBe(404);
+    // パスそのものが応答に含まれる実装でも比べられるよう、パスを同じ記号に置き換えてから比べる
+    const normalize = (text: string, p: string): string => text.replaceAll(p, '<PATH>');
+    expect(normalize(res.text, path), '拒否の応答の本文が、存在しないパスの応答と違う').toBe(
+      normalize(missing.text, missingPath)
+    );
   });
 
   it.each(denied)('S1-5: GET /api/tree の一覧に $path が出ない($reason)', async ({ path }) => {
@@ -337,8 +416,8 @@ describe('S1-5: Secret files and .gitignore targets are hidden and rejected', ()
       expect(res.status, `GET /api/tree?path=${parent} が ${res.status} を返した`).toBe(200);
       expect(listsName(res.text, sibling), `${parent} の一覧に ${sibling} が無い`).toBe(true);
     } else {
-      // 親そのものが拒否対象(.git、build-out)なら、4xx で拒否されてもよい
-      expect(res.status, `GET /api/tree?path=${parent} が ${res.status} を返した`).toBeLessThan(500);
+      // 親そのものが拒否対象(.git、build-out)なら、存在しないパスと同じ 404
+      expect(res.status, `GET /api/tree?path=${parent} が ${res.status} を返した`).toBe(404);
     }
     expect(listsName(res.text, name), `${parent} の一覧に ${name} が載っている`).toBe(false);
   });
@@ -354,7 +433,7 @@ describe('S1-5: Secret files and .gitignore targets are hidden and rejected', ()
 
   it.each(['.git', '.git/', 'build-out'])('S1-5: GET /api/tree は %s の中身を返さない', async (path) => {
     const res = await request(server, `/api/tree?path=${encodeURIComponent(path)}`);
-    expectRejected(res, `GET /api/tree?path=${path}`);
+    expectNotFound(res, `GET /api/tree?path=${path}`);
     for (const name of ['config', 'HEAD', 'artifact.txt']) {
       expect(listsName(res.text, name), `${path} の一覧に ${name} が載っている`).toBe(false);
     }
@@ -377,12 +456,13 @@ describe('S1-5: Secret files and .gitignore targets are hidden and rejected', ()
 
   it.each(envVariants)('S1-5: パスの書き方を変えても、秘密ファイルの中身は返らない(%s)', async (_label, query) => {
     const res = await request(server, `/api/file?path=${query}`);
-    expectRejected(res, `GET /api/file?path=${query}`, denied.map((d) => d.sentinel));
+    // 形式から外と分かるもの(../ を含む)は 400 でもよい。それ以外は 404
+    expectOutsideRejected(res, `GET /api/file?path=${query}`, denied.map((d) => d.sentinel));
   });
 
   it('S1-5: 秘密ファイルを指すリポジトリ内のシンボリックリンク経由でも、中身は返らない', async () => {
     const res = await request(server, '/api/file?path=notes-link.txt');
-    expectRejected(res, 'GET /api/file?path=notes-link.txt', denied.map((d) => d.sentinel));
+    expectNotFound(res, 'GET /api/file?path=notes-link.txt', denied.map((d) => d.sentinel));
   });
 
   it('S1-5: .gitignore で除外されたレポートは GET /api/reports の一覧に出ない', async () => {
@@ -391,6 +471,35 @@ describe('S1-5: Secret files and .gitignore targets are hidden and rejected', ()
     expect(res.text).toContain('2026-10-12-feature.md');
     expect(res.text).not.toContain('2026-12-31-ignored');
   });
+
+  // 決定済み(2026-10-18, Q9): .gitignore は git と同じ意味で扱う(否定パターン、適用範囲)
+  it.each(VISIBLE_DESPITE_GITIGNORE)(
+    'S1-5: 否定パターンや適用範囲により除外されないファイル $path は、一覧に載り、取得できる($reason)',
+    async ({ path, sentinel }) => {
+      const segments = path.split('/');
+      const parent = segments.slice(0, -1).join('/');
+      const tree = await request(server, `/api/tree?path=${encodeURIComponent(parent)}`);
+      expect(tree.status).toBe(200);
+      expect(listsName(tree.text, segments[segments.length - 1] as string), `${parent || '(ルート)'} の一覧に無い`).toBe(true);
+      const file = await request(server, `/api/file?path=${encodeURIComponent(path)}`);
+      expect(file.status).toBe(200);
+      expect(bodyContains(file.text, sentinel)).toBe(true);
+    }
+  );
+
+  // 決定済み(2026-10-18, Q9): 否定パターンで秘密ファイルの判定は解除されない
+  it.each(['.env.example', 'subdir/.env', 'subdir/nested/private.key'])(
+    'S1-5: .gitignore に否定パターン(!)があっても、秘密ファイル %s は拒否され、一覧に出ない',
+    async (path) => {
+      const res = await request(server, `/api/file?path=${encodeURIComponent(path)}`);
+      expectNotFound(res, `GET /api/file?path=${path}`, denied.map((d) => d.sentinel));
+      const segments = path.split('/');
+      const parent = segments.slice(0, -1).join('/');
+      const tree = await request(server, `/api/tree?path=${encodeURIComponent(parent)}`);
+      expect(tree.status).toBe(200);
+      expect(listsName(tree.text, segments[segments.length - 1] as string), `${parent || '(ルート)'} の一覧に載っている`).toBe(false);
+    }
+  );
 
   it('S1-5: 拒否対象でない通常のファイルは、一覧に載り、取得できる', async () => {
     const tree = await request(server, '/api/tree?path=subdir');

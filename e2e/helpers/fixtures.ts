@@ -33,6 +33,9 @@ const SECRET_PATHS: ReadonlyArray<readonly [path: string, reason: string]> = [
   ['.env', '.env*'],
   ['.env.local', '.env*'],
   ['.env.production', '.env*'],
+  // 決定済み(2026-10-18, Q6): .env* は文字どおりに扱い、.env.example も拒否する。
+  // ルートの .gitignore の否定パターン(!.env.example)があっても、秘密ファイルの判定は解除されない(Q9)
+  ['.env.example', '.env*(.env.example。.gitignore の否定パターンがあっても拒否)'],
   ['subdir/.env', '.env*(サブディレクトリ)'],
   ['.git/config', '.git/'],
   ['.git/HEAD', '.git/'],
@@ -47,9 +50,28 @@ const SECRET_PATHS: ReadonlyArray<readonly [path: string, reason: string]> = [
 ];
 
 /** フィクスチャの .gitignore の内容 */
-const GITIGNORE_CONTENT = ['excluded-by-git.txt', '*.log', 'build-out/', 'reports/2026-12-31-ignored.md', ''].join(
-  '\n'
-);
+const GITIGNORE_CONTENT = [
+  'excluded-by-git.txt',
+  '*.log',
+  // 否定パターン: *.log のうち important.log だけは除外されない(git と同じ意味)
+  '!important.log',
+  'build-out/',
+  'reports/2026-12-31-ignored.md',
+  // 秘密ファイルの判定は、否定パターンでは解除されない
+  '!.env.example',
+  '',
+].join('\n');
+
+/** サブディレクトリ subdir/.gitignore の内容(決定済み 2026-10-18, Q9: サブディレクトリの .gitignore も扱う) */
+const SUBDIR_GITIGNORE_CONTENT = [
+  'sub-ignored.txt',
+  // 先頭のスラッシュは、この .gitignore のあるディレクトリ(subdir/)の直下だけを指す
+  '/anchored.txt',
+  // 秘密ファイルの判定は、否定パターンでは解除されない(subdir/.env は拒否されたまま)
+  '!.env',
+  '!*.key',
+  '',
+].join('\n');
 
 /** 上の .gitignore で除外されるパス */
 const GITIGNORED_PATHS: ReadonlyArray<readonly [path: string, reason: string]> = [
@@ -58,6 +80,18 @@ const GITIGNORED_PATHS: ReadonlyArray<readonly [path: string, reason: string]> =
   ['subdir/trace.log', '.gitignore(*.log、サブディレクトリ)'],
   ['build-out/artifact.txt', '.gitignore(build-out/)'],
   ['reports/2026-12-31-ignored.md', '.gitignore(reports/ 配下のレポート)'],
+  ['subdir/sub-ignored.txt', 'subdir/.gitignore(ファイル名の指定)'],
+  ['subdir/anchored.txt', 'subdir/.gitignore(/anchored.txt。subdir の直下)'],
+];
+
+/** .gitignore の否定パターンや適用範囲のおかげで、除外されず、見えて取得できるべきファイル */
+export const VISIBLE_DESPITE_GITIGNORE: ReadonlyArray<{ path: string; sentinel: string; reason: string }> = [
+  { path: 'important.log', sentinel: 'E2E_VISIBLE_IMPORTANT_LOG_SENTINEL', reason: '否定パターン(!important.log)' },
+  {
+    path: 'subdir/nested/anchored.txt',
+    sentinel: 'E2E_VISIBLE_NESTED_ANCHORED_SENTINEL',
+    reason: 'subdir/.gitignore の /anchored.txt は subdir の直下だけを指す',
+  },
 ];
 
 /**
@@ -77,6 +111,12 @@ export async function createDeniedFiles(repoDir: string): Promise<DeniedFile[]> 
     created.push({ path, sentinel, reason });
   }
   await writeFile(join(repoDir, '.gitignore'), GITIGNORE_CONTENT);
+  await writeFile(join(repoDir, 'subdir/.gitignore'), SUBDIR_GITIGNORE_CONTENT);
+  for (const v of VISIBLE_DESPITE_GITIGNORE) {
+    const full = join(repoDir, v.path);
+    await mkdir(dirname(full), { recursive: true });
+    await writeFile(full, `# e2e のダミー\nVISIBLE=${v.sentinel}\n`);
+  }
   return created;
 }
 

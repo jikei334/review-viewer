@@ -215,22 +215,18 @@ const ALLOWED_FINDINGS: readonly AllowedFinding[] = [
     reason: 'システムテストが、SPEC §2.5 の契約どおりに `npm start -- <パス>` でアプリを起動し、終了コードを確かめるため(Tester の領域。T1-8)',
   },
   // 以下の2件は、T1-P1 で src/project-setup.test.ts に入った「依存に Anthropic のパッケージが無い」
-  // テストの、題名と、比較に使う接頭辞。T1-P1 と T1-6 のどちらが先にコミットされても通るように、
-  // 該当が無くてもよいことにしている。
-  // TODO(T1-P1): T1-P1 がコミットされたら、この2件の mustMatch を消して、既定(true)に戻す
+  // テストの、題名と、比較に使う接頭辞。
   {
     file: 'src/project-setup.test.ts',
     rule: 'anthropic-reference',
     literal: 'T1-P1、C-4: @anthropic-ai/* に依存していない',
     reason: 'C-4 を確かめるテストの題名',
-    mustMatch: false,
   },
   {
     file: 'src/project-setup.test.ts',
     rule: 'anthropic-reference',
     literal: '@anthropic-ai/',
     reason: 'C-4 を確かめるテストが、依存のパッケージ名と比べる接頭辞',
-    mustMatch: false,
   },
 ];
 

@@ -1,6 +1,6 @@
 /**
  * e2e 表示まわりのテスト(ステージ1)
- * 対象基準: S1-2(GFM の変換)、S1-3(Mermaid)、S1-7(HTML・スクリプトの無害化)、S1-8(path:line リンク)
+ * 対象基準: S1-2(GFM の変換)、S1-3(Mermaid)、S1-7(HTML・スクリプトの無害化)、S1-8(path:line リンク)、S1-11(ソースツリーとファイル表示)
  *
  * SPEC §2.2 の Web API には、Markdown を HTML に変換して返すエンドポイントが無い。
  * 変換と無害化の結果は、画面(ブラウザ)でしか観測できない。
@@ -13,6 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from 'playwright';
+import { createDeniedFiles } from './helpers/fixtures.js';
 import { bodyContains, request, type HttpResult } from './helpers/http.js';
 import { startTestServer, stopIfStarted, type TestServer } from './helpers/server.js';
 import { launchBrowser, createSession, openReport } from './helpers/browser.js';
@@ -32,6 +33,8 @@ declare global {
 const GFM_REPORT = 'reports/2026-08-03-gfm.md';
 /** S1-7 用のフィクスチャ(XSS のテストケース) */
 const XSS_REPORT = 'reports/2026-08-02-xss.md';
+/** S1-7 用のフィクスチャ(閉じない HTML ブロックの後ろにペイロードがある) */
+const XSS_EDGE_REPORT = 'reports/2026-08-05-xss-unclosed-block.md';
 /** S1-3 用のフィクスチャ(正しい図、不正な記法、スクリプトを仕込んだ図) */
 const MERMAID_REPORT = 'reports/2026-08-01-mermaid.md';
 /** S1-8 用のフィクスチャ(path:line 形式の参照) */
@@ -377,60 +380,71 @@ describe('S1-7: HTML and scripts in Markdown are neutralized', () => {
     const session = await createSession(browser!);
     try {
       await openReport(session.page, server, XSS_REPORT);
+      const content = session.page.locator('[data-testid="report-content"]');
+      const origin = `http://127.0.0.1:${server.port}`;
 
-      // XSS テストリンクのテキストで絞り込む
-      const xssLinkTexts = [
-        'XSS-LINK-HTML-JS',
-        'XSS-LINK-HTML-ENTITY',
-        'XSS-LINK-JS-MIXED',
-        'XSS-LINK-DATA',
-      ];
+      // Markdown のリンク記法で書いたものは、リンクの文字が必ず表示される(消えていたら、
+      // この資料の後半が Markdown として解釈されていないということで、検証にならない)。
+      // 暫定: 無害化でリンクの属性が落ちても、リンクの文字は残る(a 要素である必要はない)と仮定する
+      const markdownLinkTexts = ['XSS-LINK-JS(', 'XSS-LINK-JS-MIXED', 'XSS-LINK-DATA'];
+      // 生の HTML で書いたもの。無害化で要素ごと除かれてもよいので、あれば検証する
+      const htmlLinkTexts = ['XSS-LINK-HTML-JS', 'XSS-LINK-HTML-ENTITY'];
 
-      for (const text of xssLinkTexts) {
-        const link = session.page
-          .locator('[data-testid="report-content"] a')
-          .filter({ hasText: text });
-        const count = await link.count();
-        if (count > 0) {
-          // href が javascript: のままになっていないか確認
-          const href = (await link.first().getAttribute('href')) ?? '';
-          expect(
-            href.toLowerCase().trim(),
-            `${text} の href が javascript: のまま残っている`
-          ).not.toMatch(/^javascript:/);
-
-          // クリックしてもスクリプトが実行されないか確認
-          try {
-            await link.first().click({ timeout: 2_000 });
-          } catch {
-            // クリックできない場合(非表示など)はスキップ
-          }
-
-          const xss = await session.page.evaluate(() => window.__rvXss);
-          expect(
-            xss,
-            `${text} をクリックしてスクリプトが実行された`
-          ).toBeUndefined();
-        }
+      for (const text of markdownLinkTexts) {
+        const target = content.getByText(text).first();
+        await target.waitFor({ state: 'visible', timeout: 5_000 });
       }
 
-      // "クリックしても実行されない" テキストを持つリンクも試みる
-      const jsLink = session.page
-        .locator('[data-testid="report-content"] a')
-        .filter({ hasText: 'XSS-LINK-JS(' });
-      if ((await jsLink.count()) > 0) {
-        const href = (await jsLink.first().getAttribute('href')) ?? '';
-        expect(
-          href.toLowerCase().trim(),
-          'XSS-LINK-JS リンクの href が javascript: のまま残っている'
-        ).not.toMatch(/^javascript:/);
-        try {
-          await jsLink.first().click({ timeout: 2_000 });
-        } catch {
-          // クリックできない場合はスキップ
+      for (const text of [...markdownLinkTexts, ...htmlLinkTexts]) {
+        const target = content.getByText(text).first();
+        if ((await target.count()) === 0) continue;
+
+        // a 要素なら、href が javascript: のまま残っていない
+        const anchors = content.locator('a').filter({ hasText: text });
+        for (let i = 0; i < (await anchors.count()); i++) {
+          const href = ((await anchors.nth(i).getAttribute('href')) ?? '').toLowerCase().trim();
+          expect(href, `${text} の href が javascript: のまま残っている`).not.toMatch(/^javascript:/);
         }
+
+        // クリックしてもスクリプトが実行されない。
+        // 新しいタブやポップアップに出る場合も含めて、アプリの画面が残っていることも確かめる
+        await target.click({ timeout: 5_000 });
         const xss = await session.page.evaluate(() => window.__rvXss);
-        expect(xss, 'XSS-LINK-JS クリックでスクリプトが実行された').toBeUndefined();
+        expect(xss, `${text} をクリックしてスクリプトが実行された`).toBeUndefined();
+        expect(session.page.url().toLowerCase(), `${text} のクリックで画面が javascript: に遷移した`).not.toMatch(
+          /^javascript:/
+        );
+        if (!session.page.url().startsWith(origin)) {
+          // data: などへ遷移した場合は、元の画面へ戻して次のリンクを試す
+          await openReport(session.page, server, XSS_REPORT);
+        }
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
+  // 閉じタグに空白がある <SCRIPT >…</SCRIPT > は、CommonMark の HTML ブロックを閉じず、
+  // 後ろの見出しやリンクまで呑み込む。呑み込まれた部分も含め、何も実行されないこと
+  it('S1-7: 閉じない HTML ブロック(</SCRIPT > の空白)の後ろにあるペイロードも、実行されない【要ブラウザ】', async () => {
+    const session = await createSession(browser!);
+    try {
+      await openReport(session.page, server, XSS_EDGE_REPORT);
+      const content = session.page.locator('[data-testid="report-content"]');
+      // フィクスチャが開けて、前の文章が表示されている
+      await content.getByText('XSS-EDGE-VISIBLE-BEFORE').first().waitFor({ state: 'visible', timeout: 5_000 });
+
+      await session.page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {
+        // networkidle に到達しない場合も問題ない
+      });
+      expect(await session.page.evaluate(() => window.__rvXss), '開いただけで実行された').toBeUndefined();
+
+      // 後ろにあるリンクが表示されていれば、クリックしても実行されない(呑み込まれて消えていてもよい)
+      for (const text of ['XSS-EDGE-LINK-JS', 'XSS-EDGE-LINK-HTML']) {
+        const target = content.getByText(text).first();
+        if ((await target.count()) === 0) continue;
+        await target.click({ timeout: 5_000 });
+        expect(await session.page.evaluate(() => window.__rvXss), `${text} のクリックで実行された`).toBeUndefined();
       }
     } finally {
       await session.close();
@@ -541,6 +555,117 @@ describe('S1-8: path:line links', () => {
       ).toBeGreaterThan(0);
     } finally {
       await session.close();
+    }
+  });
+});
+
+// ─── ソースのツリー表示(SPEC §4.1 の source-tree / source-line-number) ────────
+
+// 基準 ID: S1-11(ソースツリーで、ディレクトリを開閉でき、ファイルを選ぶと
+// ソース表示エリアに行番号つきで開く)。
+describe('S1-11: ソースのツリーとファイル表示(行番号つき)', () => {
+  /**
+   * トップページを開き、ソースツリーが表示されるまで待つ
+   * @param page Playwright の Page
+   * @returns ソースツリーの Locator
+   */
+  async function openTree(page: import('playwright').Page): Promise<import('playwright').Locator> {
+    await page.goto(`http://127.0.0.1:${server.port}/`);
+    const tree = page.locator('[data-testid="source-tree"]');
+    await tree.waitFor({ state: 'visible', timeout: 10_000 });
+    return tree;
+  }
+
+  it('S1-11: ツリーのディレクトリを開き、ファイルを開くと、ソース表示エリアに内容が表示される【要ブラウザ】', async () => {
+    const session = await createSession(browser!);
+    try {
+      const tree = await openTree(session.page);
+
+      // ディレクトリ subdir の button。aria-expanded を持つ
+      const dir = tree.getByRole('button', { name: 'subdir' }).first();
+      await dir.waitFor({ state: 'visible', timeout: 5_000 });
+      expect(await dir.getAttribute('aria-expanded'), 'ディレクトリの button に aria-expanded が無い').not.toBeNull();
+
+      if ((await dir.getAttribute('aria-expanded')) !== 'true') await dir.click();
+      await session.page.waitForSelector('[data-testid="source-tree"] [aria-expanded="true"]', { timeout: 5_000 });
+      expect(await dir.getAttribute('aria-expanded')).toBe('true');
+
+      // 中のファイルの button をクリックすると、ソース表示エリアにそのファイルが開く
+      const file = tree.getByRole('button', { name: 'normal.ts' }).first();
+      await file.waitFor({ state: 'visible', timeout: 5_000 });
+      await file.click();
+
+      const view = session.page.locator('[data-testid="source-view"]');
+      await view.waitFor({ state: 'visible', timeout: 10_000 });
+      await view.getByText('export const ANSWER = 42;').first().waitFor({ state: 'visible', timeout: 10_000 });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('S1-11: ソース表示エリアの各行に、1 始まりの行番号が表示される【要ブラウザ】', async () => {
+    const session = await createSession(browser!);
+    try {
+      const tree = await openTree(session.page);
+      const dir = tree.getByRole('button', { name: 'subdir' }).first();
+      if ((await dir.getAttribute('aria-expanded')) !== 'true') await dir.click();
+      await tree.getByRole('button', { name: 'normal.ts' }).first().click();
+
+      // subdir/normal.ts は 3 行(コメント、空行、export const ANSWER = 42;)
+      const line3 = session.page.locator('[data-testid="source-view"] [data-testid="source-line"][data-line="3"]');
+      await line3.waitFor({ state: 'visible', timeout: 10_000 });
+      expect(await line3.textContent(), '3 行目に export const ANSWER が無い').toContain('export const ANSWER = 42;');
+
+      for (const n of [1, 2, 3]) {
+        const line = session.page.locator(`[data-testid="source-line"][data-line="${n}"]`);
+        const number = line.locator('[data-testid="source-line-number"]');
+        expect(await number.count(), `行 ${n} に source-line-number が 1 つ無い`).toBe(1);
+        expect((await number.textContent())?.trim(), `行 ${n} の行番号の表示`).toBe(String(n));
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('S1-11: ディレクトリの button をもう一度クリックすると閉じ、中のファイルが見えなくなる【要ブラウザ】', async () => {
+    const session = await createSession(browser!);
+    try {
+      const tree = await openTree(session.page);
+      const dir = tree.getByRole('button', { name: 'subdir' }).first();
+      await dir.waitFor({ state: 'visible', timeout: 5_000 });
+      if ((await dir.getAttribute('aria-expanded')) !== 'true') await dir.click();
+      await tree.getByRole('button', { name: 'normal.ts' }).first().waitFor({ state: 'visible', timeout: 5_000 });
+      expect(await dir.getAttribute('aria-expanded')).toBe('true');
+
+      await dir.click();
+      await tree.getByRole('button', { name: 'normal.ts' }).first().waitFor({ state: 'hidden', timeout: 5_000 });
+      expect(await dir.getAttribute('aria-expanded'), '閉じても aria-expanded が "true" のまま').not.toBe('true');
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('S1-5: ツリーに、秘密ファイルや .gitignore の対象が表示されない【要ブラウザ】', async () => {
+    // 画面経由でも、一覧に出さないことを確かめる(API の S1-5 と同じ基準を、画面で見る)
+    const secret = await startTestServer({
+      setup: async (repoDir) => {
+        await createDeniedFiles(repoDir);
+      },
+    });
+    const session = await createSession(browser!);
+    try {
+      await session.page.goto(`http://127.0.0.1:${secret.port}/`);
+      const tree = session.page.locator('[data-testid="source-tree"]');
+      await tree.waitFor({ state: 'visible', timeout: 10_000 });
+      // 一覧が描画されていること(空では検証にならない)
+      await tree.getByRole('button', { name: 'subdir' }).first().waitFor({ state: 'visible', timeout: 5_000 });
+      const text = (await tree.textContent()) ?? '';
+      for (const name of ['.env', 'secret.pem', 'server.key', 'id_rsa', 'credentials', '.claude.json', 'excluded-by-git.txt', 'build-out']) {
+        expect(text, `ツリーに ${name} が表示されている`).not.toContain(name);
+      }
+    } finally {
+      await session.close();
+      await secret.stop();
     }
   });
 });
