@@ -282,6 +282,32 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 - [ ] **S2-8** 保存先(§2.5「保存先の決め方」で決まったディレクトリ)以外に書き込まない(対象リポジトリの内容が、操作の前後で変わらないことをテストで確認する)
 - [ ] **S2-9** 保存先(§2.5「保存先の決め方」)が使えない(作れない、書き込めない)、対象リポジトリの中にある、または一時ディレクトリの既存のものが安全でない(シンボリックリンク、他人の所有、権限が緩い)とき、サーバーは待ち受けを始めずに、理由を示して終了コード 0 以外で終了する。引数 `--data-dir`、環境変数 `DATA_DIR`、`/data`、一時ディレクトリの順に、最初に決まったものが使われる
 
+### 5.1 画面の契約(ステージ2で追加。システムテストが依存してよい要素)
+
+§4.1 の「要素の特定方法」の考え方(意味のある HTML 要素で特定し、不足する箇所だけ `data-testid` を約束する。クラス名・ID・入れ子などの構造は根拠にしない)に従い、次を追加で約束する。
+
+| 要素 | 特定方法 | 補足 |
+|---|---|---|
+| コメント追加ボタン | `[data-testid="comment-add-button"]` | `source-view` または `report-content` の中でテキストを選択すると現れ、選択を解除すると消える。クリックでコメントフォームが開く |
+| コメントフォーム | `[data-testid="comment-form"]` | この中に次の3つがある |
+| 本文の入力 | `[data-testid="comment-body-input"]` | `textarea` |
+| 種類の選択 | `[data-testid="comment-type-select"]` | `select`。`option` の `value` は `note`(メモ)、`instruction`(AI への指示) |
+| 送信 | `[data-testid="comment-submit"]` | `button`。成功するとフォームが閉じ、一覧に現れる(再読み込み不要) |
+| コメント一覧 | `[data-testid="comment-list"]` | 既定では全ファイルのコメントを、ファイルごとにまとめて表示する |
+| ファイルごとのまとまり | `[data-testid="comment-group"]` | `data-path` に対象のパス。一覧の中にある |
+| コメント1件 | `[data-testid="comment-item"]` | `data-comment-id`、`data-status`(`open` / `resolved` / `wontfix`)、`data-type`(`note` / `instruction`)、`data-author`、`data-position`(`exact` / `moved` / `lost`)を持つ。`lost` のときは「位置不明」という文字を含む。対象のパスと行番号を文字として含む |
+| コメント本文 | `[data-testid="comment-body"]` | コメント1件の中。Markdown を無害化した HTML |
+| 返信 | `[data-testid="comment-reply"]` | コメント1件の中。`data-author` を持つ。本文は無害化した HTML |
+| 返信の入力・送信 | `[data-testid="comment-reply-input"]`(`textarea`)、`[data-testid="comment-reply-submit"]`(`button`) | コメント1件の中 |
+| ステータスの変更 | `[data-testid="comment-status-select"]` | コメント1件の中の `select`。`option` の `value` は `open`、`resolved`、`wontfix`。変更すると保存される |
+| 絞り込み(ステータス) | `[data-testid="comment-filter-status"]` | `select`。`value` は空文字(すべて)、`open`、`resolved`、`wontfix` |
+| 絞り込み(種類) | `[data-testid="comment-filter-type"]` | `select`。`value` は空文字(すべて)、`note`、`instruction` |
+| 絞り込み(ファイル) | `[data-testid="comment-filter-path"]` | `select`。`value` は空文字(すべて)、またはコメントのあるパス |
+
+- ソースで選択したときの行範囲は、選択が触れる最初と最後の `source-line` の `data-line`
+- レポートで選択したときの行範囲は、選択が触れるブロック要素(段落、見出し、リスト項目、表の行、コードブロック)の、元の Markdown ファイル上の行範囲(最初のブロックの開始行から、最後のブロックの終了行まで)
+- 絞り込みを変えると、一覧が即座に更新される。条件に合うコメントが無いとき、`comment-item` は 0 件
+
 ---
 
 ## 6. ステージ3: MCP
