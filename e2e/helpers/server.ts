@@ -38,7 +38,7 @@ const SPEC_ENV_NAMES = [
 ] as const;
 
 /** 既定値の検証のために、あえて渡さないことを選べる環境変数 */
-export type OmittableEnv = 'HOST' | 'ALLOWED_HOSTS' | 'ALLOWED_ORIGINS';
+export type OmittableEnv = 'HOST' | 'ALLOWED_HOSTS' | 'ALLOWED_ORIGINS' | 'DATA_DIR';
 
 /** サーバーへ送るシグナル */
 export type StopSignal = 'SIGTERM' | 'SIGINT';
@@ -61,8 +61,16 @@ export interface TestServer {
   port: number;
   /** 一時的な REPO_DIR のパス */
   repoDir: string;
-  /** 一時的な DATA_DIR のパス */
+  /** 一時的な DATA_DIR のパス(DATA_DIR を渡さない起動でも、用意だけはされる) */
   dataDir: string;
+  /** repoDir と dataDir の親にあたる、このサーバー用の一時ディレクトリ(stop で削除される) */
+  baseDir: string;
+  /**
+   * サーバーを SIGTERM で止めて、同じ repoDir / dataDir / ポート / 環境変数 / 引数で起動し直す。
+   * 一時ディレクトリは削除しない(最後の stop まで残る)。再起動後の GET /healthz が 200 になるまで待つ
+   * @returns 停止の結果(停止の様子)
+   */
+  restart: () => Promise<StopResult>;
   /**
    * これまでにサーバーが標準出力・標準エラーへ出した内容を返す
    * @returns 標準出力と標準エラーを連結した文字列
@@ -105,6 +113,31 @@ export interface StartOptions {
   setup?: (repoDir: string, dataDir: string, port: number) => Promise<void>;
   /** 起動完了を待つ上限(ミリ秒)。既定は 20 秒 */
   startTimeoutMs?: number;
+  /**
+   * `npm start --` の後ろに渡す引数(例: `['--data-dir', '/tmp/x']`)。
+   * `{data}` は一時的な dataDir、`{repo}` は repoDir に置き換わる
+   */
+  args?: string[];
+  /**
+   * 追加で渡す環境変数。値が undefined なら、その変数を渡さない。
+   * 値の中の `{data}`、`{repo}`、`{base}`(一時ディレクトリの親)は、実際のパスに置き換わる
+   */
+  env?: Record<string, string | undefined>;
+  /** `npm start` を実行するディレクトリ。省略時はアプリのルート */
+  cwd?: string;
+}
+
+/**
+ * `npm <引数>` を、新しいプロセスグループで起動する(標準入力は端末にしない)。
+ * 子プロセスの起動は、静的チェック(C-4)の許可の都合で、このファイルに集める
+ *
+ * @param npmArgs npm に渡す引数
+ * @param cwd 実行するディレクトリ
+ * @param env 環境変数
+ * @returns 起動した子プロセス
+ */
+export function spawnNpm(npmArgs: string[], cwd: string, env: NodeJS.ProcessEnv): ChildProcess {
+  return spawn('npm', npmArgs, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 }
 
 /** 異常終了時の後始末のために、起動中のプロセスを覚えておく */
@@ -222,28 +255,31 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
   const dataDir = join(tmpBase, 'data');
   const omit = new Set<string>(options.omitEnv ?? []);
 
-  let proc: ChildProcess | undefined;
   let output = '';
+  /** 現在動いている `npm start` のプロセス */
+  let current: ChildProcess | undefined;
 
   /**
-   * 文字列の中の `{port}` を、実際のポート番号に置き換える
+   * 文字列の中の `{port}` などを、実際の値に置き換える
    * @param value 置き換え前の文字列
    * @returns 置き換え後の文字列
    */
-  const withPort = (value: string): string => value.replaceAll('{port}', String(port));
+  const withPort = (value: string): string =>
+    value
+      .replaceAll('{port}', String(port))
+      .replaceAll('{data}', dataDir)
+      .replaceAll('{repo}', repoDir)
+      .replaceAll('{base}', tmpBase);
 
-  try {
-    await cp(FIXTURES_REPO, repoDir, { recursive: true, verbatimSymlinks: true });
-    await alignReportMtimes(repoDir);
-    await mkdir(dataDir, { recursive: true });
-    if (options.setup) {
-      await options.setup(repoDir, dataDir, port);
-    }
-
+  /**
+   * 環境変数を組み立てる
+   * @returns 子プロセスに渡す環境変数
+   */
+  const buildEnv = (): NodeJS.ProcessEnv => {
     const env: NodeJS.ProcessEnv = { ...process.env };
     for (const name of SPEC_ENV_NAMES) delete env[name];
     env.REPO_DIR = repoDir;
-    env.DATA_DIR = dataDir;
+    if (!omit.has('DATA_DIR')) env.DATA_DIR = dataDir;
     env.PORT = String(port);
     if (!omit.has('HOST')) env.HOST = '127.0.0.1';
     if (!omit.has('ALLOWED_HOSTS')) {
@@ -255,17 +291,31 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
       );
     }
     if (options.token !== undefined) env.REVIEW_VIEWER_TOKEN = options.token;
+    for (const [name, value] of Object.entries(options.env ?? {})) {
+      if (value === undefined) delete env[name];
+      else env[name] = withPort(value);
+    }
+    return env;
+  };
 
-    const child = spawn('npm', ['start'], {
-      cwd: APP_DIR,
-      env,
+  /**
+   * `npm start` を起動し、GET /healthz が 200 になるまで待つ。失敗したらプロセスを殺して例外を投げる
+   * @returns 起動済みのプロセス
+   */
+  const launchChild = async (): Promise<ChildProcess> => {
+    const npmArgs = ['start'];
+    if (options.args && options.args.length > 0) {
+      npmArgs.push('--', ...options.args.map(withPort));
+    }
+    const child = spawn('npm', npmArgs, {
+      cwd: options.cwd ? withPort(options.cwd) : APP_DIR,
+      env: buildEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
       // プロセスグループを分けて、グループ単位でシグナルを送れるようにする。
       // 注意: detached にすると、テストランナー自体が SIGKILL されたとき(exit ハンドラが動かないとき)は、
       // サーバーのプロセスが孤児として残る。その場合は手動で終了させること
       detached: true,
     });
-    proc = child;
     runningProcesses.add(child);
 
     // 出力を読み続ける(読まないとパイプが詰まってサーバーが止まる)。C-5 の検証にも使う
@@ -285,57 +335,75 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
       exited = true;
     });
 
-    const healthHost = withPort(options.healthHost ?? '127.0.0.1:{port}');
-    const timeoutMs = options.startTimeoutMs ?? 20_000;
-    let lastProblem = '(まだ一度も応答がありません)';
-    const ready = await waitUntil(async () => {
-      if (spawnError || exited) return true;
-      try {
-        const res = await request({ port }, '/healthz', {
-          headers: { Host: healthHost },
-          timeoutMs: 1_000,
-        });
-        if (res.status === 200) return true;
-        lastProblem = `GET /healthz が ${res.status} を返しました`;
-      } catch (err) {
-        // 起動途中は接続できないのが普通。最後の状況として記録し、待ち続ける
-        lastProblem = String(err);
-      }
-      return false;
-    }, timeoutMs, 200);
+    try {
+      const healthHost = withPort(options.healthHost ?? '127.0.0.1:{port}');
+      const timeoutMs = options.startTimeoutMs ?? 20_000;
+      let lastProblem = '(まだ一度も応答がありません)';
+      const ready = await waitUntil(async () => {
+        if (spawnError || exited) return true;
+        try {
+          const res = await request({ port }, '/healthz', {
+            headers: { Host: healthHost },
+            timeoutMs: 1_000,
+          });
+          if (res.status === 200) return true;
+          lastProblem = `GET /healthz が ${res.status} を返しました`;
+        } catch (err) {
+          // 起動途中は接続できないのが普通。最後の状況として記録し、待ち続ける
+          lastProblem = String(err);
+        }
+        return false;
+      }, timeoutMs, 200);
 
-    if (spawnError) {
-      throw new Error(`npm start を実行できませんでした: ${String(spawnError)}`);
+      if (spawnError) {
+        throw new Error(`npm start を実行できませんでした: ${String(spawnError)}`);
+      }
+      if (exited) {
+        throw new Error(
+          `npm start が起動完了の前に終了しました(${APP_DIR})。出力:\n${output}`
+        );
+      }
+      if (!ready) {
+        throw new Error(
+          `${timeoutMs}ms 以内に GET /healthz が 200 になりませんでした。` +
+            `最後の状況: ${lastProblem}\n出力:\n${output}`
+        );
+      }
+    } catch (err) {
+      signalGroup(child, 'SIGKILL');
+      runningProcesses.delete(child);
+      throw err;
     }
-    if (exited) {
-      throw new Error(
-        `npm start が起動完了の前に終了しました(${APP_DIR})。出力:\n${output}`
-      );
+    return child;
+  };
+
+  try {
+    await cp(FIXTURES_REPO, repoDir, { recursive: true, verbatimSymlinks: true });
+    await alignReportMtimes(repoDir);
+    await mkdir(dataDir, { recursive: true });
+    if (options.setup) {
+      await options.setup(repoDir, dataDir, port);
     }
-    if (!ready) {
-      throw new Error(
-        `${timeoutMs}ms 以内に GET /healthz が 200 になりませんでした。` +
-          `最後の状況: ${lastProblem}\n出力:\n${output}`
-      );
-    }
+    current = await launchChild();
   } catch (err) {
-    if (proc) {
-      signalGroup(proc, 'SIGKILL');
-      runningProcesses.delete(proc);
-    }
     await rm(tmpBase, { recursive: true, force: true });
     throw err;
   }
 
-  const child = proc;
   let stopPromise: Promise<StopResult> | undefined;
 
   /**
-   * サーバーを停止する本体(1回だけ実行される)
+   * 現在のプロセスにシグナルを送って、終了を待つ(一時ディレクトリは消さない)
+   * @param child 止めるプロセス
    * @param signal 送るシグナル
+   * @param serverOnly サーバー本体だけに送るか
    * @returns 停止の結果
    */
-  const doStop = async (signal: StopSignal, serverOnly: boolean): Promise<StopResult> => {
+  const terminate = async (
+    child: ChildProcess,
+    signal: StopSignal,
+    serverOnly: boolean
+  ): Promise<StopResult> => {
     const startedAt = Date.now();
     const exitedPromise = new Promise<void>((r) => {
       if (child.exitCode !== null || child.signalCode !== null) r();
@@ -379,10 +447,22 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
         50
       );
     }
-    const exitCode = child.exitCode;
     runningProcesses.delete(child);
-    await rm(tmpBase, { recursive: true, force: true });
-    return { forced: !graceful, elapsedMs, exitCode };
+    return { forced: !graceful, elapsedMs, exitCode: child.exitCode };
+  };
+
+  /**
+   * サーバーを停止する本体(1回だけ実行される)
+   * @param signal 送るシグナル
+   * @param serverOnly サーバー本体だけに送るか
+   * @returns 停止の結果
+   */
+  const doStop = async (signal: StopSignal, serverOnly: boolean): Promise<StopResult> => {
+    try {
+      return await terminate(current as ChildProcess, signal, serverOnly);
+    } finally {
+      await rm(tmpBase, { recursive: true, force: true });
+    }
   };
 
   return {
@@ -390,7 +470,13 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
     port,
     repoDir,
     dataDir,
+    baseDir: tmpBase,
     logs: () => output,
+    restart: async () => {
+      const result = await terminate(current as ChildProcess, 'SIGTERM', false);
+      current = await launchChild();
+      return result;
+    },
     stop: (signal: StopSignal = 'SIGTERM', serverOnly = false) => {
       stopPromise ??= doStop(signal, serverOnly);
       return stopPromise;
