@@ -89,6 +89,27 @@ async function expectRefused(l: Launched, goodDataDir?: string): Promise<void> {
 }
 
 /**
+ * 対となる正常系: 同じ引数の形式(`--data-dir <パス>`)で、使える保存先なら起動して保存できる。
+ * 「--data-dir を無視する」「すべての --data-dir を拒否する」実装で、拒否のテストが偶然緑にならないようにする
+ *
+ * @param base 一時ディレクトリの親(repo はその下の repo)
+ * @param tmp TMPDIR
+ * @param equalsForm true なら `--data-dir=<パス>` の形で渡す
+ * @returns なし
+ */
+async function expectControl(base: string, tmp: string, equalsForm = false): Promise<void> {
+  const dir = join(base, `control-data${equalsForm ? '-eq' : ''}`);
+  await mkdir(dir);
+  const args = equalsForm
+    ? [join(base, 'repo'), `--data-dir=${dir}`]
+    : [join(base, 'repo'), '--data-dir', dir];
+  const l = await launchApp({ args, env: { TMPDIR: tmp } });
+  await createViaLaunched(l, 'S2-9 対照');
+  expect(await appears(join(dir, 'comments.json')), `対照: ${dir}/comments.json が無い`).toBe(true);
+  await l.stop();
+}
+
+/**
  * 「使える」保存先(空のディレクトリ)を作る。--data-dir が使えないときに、ここへ進まないことの確認に使う
  * @param base 一時ディレクトリの親
  * @returns 作ったディレクトリのパス
@@ -194,6 +215,60 @@ describe('S2-9: 保存先の決め方(指定)', () => {
     expect(await storeLikeEntries(tmp), '一時ディレクトリに保存先を作っている').toEqual([]);
   });
 
+  it('S2-9: --data-dir=<パス> の形でも指定できる(DATA_DIR より優先される)', async () => {
+    const { base, tmp } = await prepare();
+    const dir = join(base, 'eq-data');
+    const envDir = await makeGood(base);
+    await mkdir(dir);
+    const l = await launchApp({
+      args: [join(base, 'repo'), `--data-dir=${dir}`],
+      env: { DATA_DIR: envDir, TMPDIR: tmp },
+    });
+    await createViaLaunched(l, 'S2-9 = の形');
+    expect(await appears(join(dir, 'comments.json'))).toBe(true);
+    expect(await listOrNull(envDir)).toEqual([]);
+  });
+
+  it('S2-9: --data-dir=<パス> の形でも、対象リポジトリの中なら終了し、次の候補へ進まない', async () => {
+    const { base, repo, tmp } = await prepare();
+    const good = await makeGood(base);
+    const l = await launchApp({
+      args: [repo, `--data-dir=${join(repo, 'subdir')}`],
+      env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
+    });
+    await expectRefused(l, good);
+    await expectControl(base, tmp, true);
+  });
+
+  it('S2-9: 指定したパスが存在しなければ、親ディレクトリが存在するとき、そのディレクトリを作って使う(--data-dir)', async () => {
+    const { base, tmp } = await prepare();
+    const dir = join(base, 'new-leaf');
+    const l = await launchApp({ args: [join(base, 'repo'), '--data-dir', dir], env: { TMPDIR: tmp } });
+    await createViaLaunched(l, 'S2-9 作成');
+    expect(await appears(join(dir, 'comments.json'))).toBe(true);
+  });
+
+  it('S2-9: 指定したパスが存在しなければ、親ディレクトリが存在するとき、そのディレクトリを作って使う(DATA_DIR)', async () => {
+    const { base, repo, tmp } = await prepare();
+    const dir = join(base, 'new-leaf-env');
+    const l = await launchApp({ env: { REPO_DIR: repo, DATA_DIR: dir, TMPDIR: tmp } });
+    await createViaLaunched(l, 'S2-9 作成(環境変数)');
+    expect(await appears(join(dir, 'comments.json'))).toBe(true);
+  });
+
+  it('S2-9: 指定したパスの親ディレクトリも存在しなければ、親を作らずに終了する', async () => {
+    const { base, repo, tmp } = await prepare();
+    const good = await makeGood(base);
+    const dir = join(base, 'no-parent', 'child');
+    const l = await launchApp({
+      args: [repo, '--data-dir', dir],
+      env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
+    });
+    await expectRefused(l, good);
+    expect(existsSync(join(base, 'no-parent')), '親ディレクトリを作った').toBe(false);
+    await expectControl(base, tmp);
+  });
+
   it('S2-9: (b) 環境変数 DATA_DIR で指定した保存先が使われる', async () => {
     const { base, repo, tmp } = await prepare();
     const dataDir = join(base, 'env-data');
@@ -221,6 +296,7 @@ describe('S2-9: (c) 指定した保存先が使えないときは、待ち受け
     await expectRefused(l);
     expect(await listOrNull(good), '次の候補(DATA_DIR)へ進んでいる').toEqual([]);
     expect(await storeLikeEntries(tmp), '次の候補(一時ディレクトリ)へ進んでいる').toEqual([]);
+    await expectControl(base, tmp);
   });
 
   it('S2-9: DATA_DIR がファイルなら終了する(一時ディレクトリへ進まない)', async () => {
@@ -244,6 +320,7 @@ describe('S2-9: (c) 指定した保存先が使えないときは、待ち受け
       env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
     });
     await expectRefused(l, good);
+    await expectControl(base, tmp);
     expect(await storeLikeEntries(tmp)).toEqual([]);
   });
 
@@ -258,6 +335,7 @@ describe('S2-9: (c) 指定した保存先が使えないときは、待ち受け
       env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
     });
     await expectRefused(l, good);
+    await expectControl(base, tmp);
     expect(await storeLikeEntries(tmp), '次の候補へ進んでいる').toEqual([]);
     await restorePermissions(ro);
   });
@@ -285,6 +363,7 @@ describe('S2-9: (c) 指定した保存先が使えないときは、待ち受け
         env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
       });
       await expectRefused(l, good);
+    await expectControl(base, tmp);
       expect(await snapshotTree(repo), '対象リポジトリが変わった').toEqual(before);
     });
 
@@ -297,6 +376,7 @@ describe('S2-9: (c) 指定した保存先が使えないときは、待ち受け
         env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
       });
       await expectRefused(l, good);
+    await expectControl(base, tmp);
       expect(existsSync(join(repo, 'new-data')), '対象リポジトリの中に作った').toBe(false);
       expect(await snapshotTree(repo)).toEqual(before);
     });
@@ -309,6 +389,7 @@ describe('S2-9: (c) 指定した保存先が使えないときは、待ち受け
         env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
       });
       await expectRefused(l, good);
+    await expectControl(base, tmp);
     });
 
     it('S2-9: DATA_DIR が対象リポジトリの中なら終了する', async () => {
@@ -330,6 +411,7 @@ describe('S2-9: (c) 指定した保存先が使えないときは、待ち受け
         env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
       });
       await expectRefused(l, good);
+    await expectControl(base, tmp);
     });
 
     it('S2-9: 相対パスで対象リポジトリの中を指しても終了する(起動したディレクトリ基準)', async () => {
@@ -342,6 +424,7 @@ describe('S2-9: (c) 指定した保存先が使えないときは、待ち受け
         env: { DATA_DIR: good, TMPDIR: tmp, REVIEW_VIEWER_TOKEN: DUMMY_TOKEN },
       });
       await expectRefused(l, good);
+    await expectControl(base, tmp);
     });
   });
 });
@@ -386,7 +469,7 @@ describe('S2-8: 保存先以外に書き込まない(対象リポジトリは操
     expect((await readdir(base)).sort(), '一時ディレクトリの親に余計なものができた').toEqual(['data', 'repo', 'tmp']);
   });
 
-  it('S2-8: 対象リポジトリを書き込み禁止にしても、起動・作成・取得・終了が成功する', async () => {
+  it.skipIf(IS_ROOT)('S2-8: 対象リポジトリを書き込み禁止にしても、起動・作成・取得・終了が成功する(root では権限で防げないため飛ばす)', async () => {
     const { base, repo, tmp } = await prepare();
     const dataDir = join(base, 'data');
     await mkdir(dataDir);

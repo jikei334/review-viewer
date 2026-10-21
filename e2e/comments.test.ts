@@ -122,9 +122,8 @@ describe('S2-1: コメントを作成して取得できる', () => {
     const a = jsonOf(res).anchor;
     expect(a.quote).toBe(exampleLines.slice(1, endLine).join('\n'));
     const full = createHash('sha256').update(exampleContent).digest('hex');
-    expect(String(a.docHash)).toMatch(/^[0-9a-f]+$/);
-    // §2.1 は「先頭など」、§2.2 は「16進文字列」。全体でも先頭部分でも受け入れる
-    expect(full.startsWith(String(a.docHash)), 'docHash がファイル内容の SHA-256 と対応しない').toBe(true);
+    expect(String(a.docHash)).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.docHash, 'docHash がファイル内容の SHA-256 全体と一致しない').toBe(full);
   });
 
   it('S2-1: \\r\\n のファイルの quote には \\r が含まれない', async () => {
@@ -195,11 +194,20 @@ describe('S2-1: コメントを作成して取得できる', () => {
   });
 
   it('S2-1: status・type の値が不正な絞り込みは 400', async () => {
-    for (const q of ['status=bogus', 'type=bogus', 'status=', 'status=OPEN', 'type=Note']) {
+    for (const q of ['status=bogus', 'type=bogus', 'status=OPEN', 'type=Note']) {
       const res = await getComments(server, q);
-      // 空の値の扱いは SPEC に無いので、`status=` だけは 200(指定なし)か 400 のどちらも許す
-      if (q === 'status=') expect([200, 400], q).toContain(res.status);
-      else expect(res.status, q).toBe(400);
+      expect(res.status, q).toBe(400);
+    }
+  });
+
+  it('S2-1: 値が空文字の絞り込み(status=、type=、path=)は、指定しなかったものとして扱う', async () => {
+    await postComment(server, valid({ body: 'S2-1 空の絞り込み' }));
+    const all = commentsOf(await getComments(server)).map((c) => c.id);
+    expect(all.length).toBeGreaterThan(0);
+    for (const q of ['status=', 'type=', 'path=', 'status=&type=&path=']) {
+      const res = await getComments(server, q);
+      expect(res.status, q).toBe(200);
+      expect(commentsOf(res).map((c) => c.id), q).toEqual(all);
     }
   });
 
@@ -228,6 +236,8 @@ describe('S2-1: コメントを作成して取得できる', () => {
       ['quote を含む(サーバーが作る)', valid({ quote: 'x' })],
       ['docHash を含む(サーバーが作る)', valid({ docHash: 'abc' })],
       ['本文が空', valid({ body: '' })],
+      ['本文が空白文字だけ(スペース)', valid({ body: '   ' })],
+      ['本文が空白文字だけ(改行とタブ)', valid({ body: ' \n\t \r\n ' })],
       ['本文が 32 KiB 超(ASCII)', valid({ body: oversizeAscii })],
       ['本文が 32 KiB 超(UTF-8 で 32,769 バイト)', valid({ body: oversizeMultibyte })],
       ['JSON でない', '{not json'],
@@ -320,7 +330,6 @@ describe('S2-4: path は S1-4・S1-5 と同じ規則で検証される', () => {
   const odd: Array<[label: string, path: string]> = [
     ['%2e%2e%2f(エンコードされた文字列。ここでは文字どおりの名前)', '%2e%2e%2foutside-secret.txt'],
     ['二重エンコード', '%252e%252e%252foutside-secret.txt'],
-    ['バックスラッシュ', '..\\outside-secret.txt'],
   ];
   it.each(odd)('S2-4: POST はエスケープ風のパスでも、リポジトリ外を読まず作成しない(%s)', async (_label, path) => {
     const before = await countAll();
@@ -328,6 +337,31 @@ describe('S2-4: path は S1-4・S1-5 と同じ規則で検証される', () => {
     // 形式からリポジトリ外と分かるなら 400、存在しないファイル名なら 404
     expect([400, 404], res.text).toContain(res.status);
     expectNoLeak(res.text, 'POST の応答');
+    expect(await countAll()).toBe(before);
+  });
+
+  // 正規の形でないパス(正規化せずに 400)。存在するファイルを指していても 400
+  const nonCanonical: Array<[label: string, path: string]> = [
+    ['先頭の ./', './src/example.ts'],
+    ['空の要素 //', 'src//example.ts'],
+    ['. の要素', 'src/./example.ts'],
+    ['末尾の /(ファイル)', 'src/example.ts/'],
+    ['末尾の /(ディレクトリ)', 'src/'],
+    ['バックスラッシュ', 'src\\example.ts'],
+    ['バックスラッシュで ..', '..\\outside-secret.txt'],
+    ['先頭の //', '//src/example.ts'],
+  ];
+  it.each(nonCanonical)('S2-4: POST は正規の形でないパスを正規化せずに 400 にする(%s)', async (_label, path) => {
+    const before = await countAll();
+    const res = await postComment(server, valid({ path }));
+    expect(res.status, res.text).toBe(400);
+    expect(await countAll()).toBe(before);
+  });
+
+  it.each(['subdir', 'src'])('S2-4: POST はディレクトリを指す path(%s)を 404 にする', async (path) => {
+    const before = await countAll();
+    const res = await postComment(server, valid({ path }));
+    expect(res.status, res.text).toBe(404);
     expect(await countAll()).toBe(before);
   });
 
@@ -346,7 +380,10 @@ describe('S2-4: path は S1-4・S1-5 と同じ規則で検証される', () => {
     const res = await postComment(server, valid({ path }));
     expect(res.status, res.text).toBe(404);
     expectNoLeak(res.text, 'POST の応答');
-    expect(res.text, '応答に拒否の理由を載せない').not.toMatch(/gitignore|secret|symlink|symbolic|outside/i);
+    // パスがエコーされてもパス名自体には当たらないように、パスを除いてから調べる
+    expect(res.text.replaceAll(path, '<PATH>'), '応答に拒否の理由を載せない').not.toMatch(
+      /gitignore|secret|symlink|symbolic|outside/i
+    );
     expect(await countAll()).toBe(before);
   });
 
@@ -407,6 +444,11 @@ describe('S2-4: path は S1-4・S1-5 と同じ規則で検証される', () => {
       const res = await getComments(server, query);
       expect(res.status, res.text).toBe(400);
       expectNoLeak(res.text, 'GET の応答');
+    });
+
+    it.each(nonCanonical)('S2-4: 正規の形でないパスの絞り込みは 400(%s)', async (_label, path) => {
+      const res = await getComments(server, `path=${encodeURIComponent(path)}`);
+      expect(res.status, res.text).toBe(400);
     });
 
     it('S2-4: 正常なパスで作成済みのコメントは見つかる', async () => {
