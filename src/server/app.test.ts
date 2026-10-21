@@ -110,13 +110,13 @@ describe('C-2: Origin / Content-Type の検証は、ルートの有無に関係�
     }
   );
 
-  it('C-2: POST で Origin が許可リスト内なら、403 にはならない(ルートが無いので 404)', async () => {
+  it('C-2: POST で Origin が許可リスト内なら、403 にはならない(本文 {} は入力の誤りなので 400)', async () => {
     const res = await send('/api/comments', {
       method: 'POST',
       headers: { Host: HOST, Origin: ORIGIN, 'Content-Type': 'application/json' },
       body: '{}',
     });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(400);
   });
 
   it('C-2: POST で Origin が無くても、Content-Type が JSON なら 403 にはならない', async () => {
@@ -125,7 +125,7 @@ describe('C-2: Origin / Content-Type の検証は、ルートの有無に関係�
       headers: { Host: HOST, 'Content-Type': 'application/json; charset=utf-8' },
       body: '{}',
     });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(400);
   });
 
   it('C-2: GET は、Origin が許可リスト外でも拒否しない', async () => {

@@ -1,0 +1,413 @@
+/**
+ * ReviewStore: コメントを保存先(`<保存先>/comments.json`)に書く、唯一の入口(SPEC §2.1)
+ *
+ * - 書き込むのはこのサーバー1プロセスだけ。書き込みはプロセス内で直列化する(キュー)
+ * - 書き込みは、同じディレクトリの一時ファイルへ書いてから rename する(途中で落ちても壊れない)。
+ *   一時ファイルは fsync してから rename する(rename した直後の電源断で、空のファイルが残らないように)
+ * - 書き込み先は保存先のディレクトリだけ。対象リポジトリ(`/repo`)には触れない
+ * - `comments.json` が壊れていたら、黙って空にせず、理由つきで失敗させる(コメントを失わないため)
+ * - ID と時刻は注入できる(`newId`、`now`)
+ *
+ * 保存の形(外部の契約ではない):
+ * `{ "version": 1, "comments": [ <StoredComment>, ... ] }`。`comments` は作成順。
+ * `position` は保存しない(読み取りのたびに計算する。SPEC §2.2)。
+ */
+import { randomUUID } from 'node:crypto';
+import { promises as nodeFs } from 'node:fs';
+import { join } from 'node:path';
+
+/** コメントの作者 */
+export type CommentAuthor = 'human' | 'ai';
+/** コメントの種類 */
+export type CommentType = 'note' | 'instruction';
+/** コメントの状態 */
+export type CommentStatus = 'open' | 'resolved' | 'wontfix';
+
+/** コメントの位置(作成時点の情報。変えない) */
+export interface StoredAnchor {
+  /** 開始行(1 始まり) */
+  readonly startLine: number;
+  /** 終了行(1 始まり。開始行以上) */
+  readonly endLine: number;
+  /** 選択範囲の行を `\n` でつないだ文字列 */
+  readonly quote: string;
+  /** 作成時点のファイル内容の SHA-256(小文字の16進 64 文字) */
+  readonly docHash: string;
+}
+
+/** 返信 */
+export interface StoredReply {
+  readonly id: string;
+  readonly author: CommentAuthor;
+  readonly body: string;
+  /** ISO 8601(UTC) */
+  readonly createdAt: string;
+}
+
+/** 保存されるコメント */
+export interface StoredComment {
+  readonly id: string;
+  /** リポジトリ相対パス(正規の形) */
+  readonly path: string;
+  readonly anchor: StoredAnchor;
+  readonly body: string;
+  readonly author: CommentAuthor;
+  readonly type: CommentType;
+  readonly status: CommentStatus;
+  readonly replies: readonly StoredReply[];
+  /** 解決時の説明。無ければ null */
+  readonly resolution: string | null;
+  /** ISO 8601(UTC) */
+  readonly createdAt: string;
+  /** ISO 8601(UTC) */
+  readonly updatedAt: string;
+}
+
+/** 新しいコメントの内容(ID・時刻・状態・返信はストアが決める) */
+export interface NewComment {
+  readonly path: string;
+  readonly anchor: StoredAnchor;
+  readonly body: string;
+  readonly author: CommentAuthor;
+  readonly type: CommentType;
+}
+
+/** 保存ファイルの名前 */
+export const COMMENTS_FILE = 'comments.json';
+/** 保存ファイルの形の版番号 */
+export const STORE_VERSION = 1;
+
+/** ReviewStore が使うファイル操作(テストで差し替える。書き込みはここだけを通す) */
+export interface StoreFs {
+  /**
+   * ファイルを文字列として読む
+   * @param path ファイルのパス
+   * @returns 内容(無ければ `code === 'ENOENT'` の例外)
+   */
+  readFile(path: string): Promise<string>;
+  /**
+   * 新しいファイルに内容を書いて、ディスクへ反映(fsync)する。すでにあれば失敗する
+   * @param path 一時ファイルのパス
+   * @param data 書く内容
+   * @returns なし
+   */
+  writeFileSynced(path: string, data: string): Promise<void>;
+  /**
+   * ファイルを置き換える(rename)
+   * @param from 元
+   * @param to 先
+   * @returns なし
+   */
+  rename(from: string, to: string): Promise<void>;
+  /**
+   * ファイルを消す
+   * @param path ファイルのパス
+   * @returns なし
+   */
+  unlink(path: string): Promise<void>;
+}
+
+/** 実際のファイルシステムを使う操作 */
+export const realStoreFs: StoreFs = {
+  readFile: (path) => nodeFs.readFile(path, 'utf8'),
+  async writeFileSynced(path, data) {
+    // flag 'wx': すでにあるファイル(他者が置いたシンボリックリンクを含む)には書かない。所有者だけが読み書きできる権限
+    const handle = await nodeFs.open(path, 'wx', 0o600);
+    try {
+      await handle.writeFile(data, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  },
+  rename: (from, to) => nodeFs.rename(from, to),
+  unlink: (path) => nodeFs.unlink(path),
+};
+
+/** ストアの失敗(保存ファイルが壊れている、書き込めないなど)。メッセージにコメントの中身を含めない */
+export class ReviewStoreError extends Error {
+  /**
+   * @param message 理由(コメントの本文や秘密を含めない。C-5)
+   * @param options 原因(ログには出さない)
+   */
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ReviewStoreError';
+  }
+}
+
+/** ReviewStore の作成に必要なもの */
+export interface ReviewStoreOptions {
+  /** 保存先のディレクトリ(存在し、書き込めること。data-dir.ts が確かめる) */
+  readonly dataDir: string;
+  /** ファイル操作(省略時は実際のファイルシステム) */
+  readonly fs?: StoreFs;
+  /** ID の生成(省略時は UUID) */
+  readonly newId?: () => string;
+  /** 現在時刻(省略時は `new Date()`) */
+  readonly now?: () => Date;
+}
+
+/**
+ * 値が、プレーンなオブジェクトか
+ *
+ * @param value 調べる値
+ * @returns オブジェクト(配列と null を除く)なら true
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 整数(1 以上)か
+ *
+ * @param value 調べる値
+ * @returns 1 以上の安全な整数なら true
+ */
+function isLineNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1;
+}
+
+/**
+ * 保存されたコメント1件の形を確かめる
+ *
+ * 読み込み時の検査(壊れた・手で編集された保存ファイルを、黙って受け入れないため)。
+ *
+ * @param value 調べる値
+ * @returns StoredComment の形なら true
+ */
+function isStoredComment(value: unknown): value is StoredComment {
+  if (!isRecord(value)) return false;
+  const a = value['anchor'];
+  if (!isRecord(a)) return false;
+  const replies = value['replies'];
+  return (
+    typeof value['id'] === 'string' &&
+    typeof value['path'] === 'string' &&
+    isLineNumber(a['startLine']) &&
+    isLineNumber(a['endLine']) &&
+    typeof a['quote'] === 'string' &&
+    typeof a['docHash'] === 'string' &&
+    typeof value['body'] === 'string' &&
+    (value['author'] === 'human' || value['author'] === 'ai') &&
+    (value['type'] === 'note' || value['type'] === 'instruction') &&
+    (value['status'] === 'open' || value['status'] === 'resolved' || value['status'] === 'wontfix') &&
+    Array.isArray(replies) &&
+    replies.every(
+      (r) =>
+        isRecord(r) &&
+        typeof r['id'] === 'string' &&
+        (r['author'] === 'human' || r['author'] === 'ai') &&
+        typeof r['body'] === 'string' &&
+        typeof r['createdAt'] === 'string'
+    ) &&
+    (value['resolution'] === null || typeof value['resolution'] === 'string') &&
+    typeof value['createdAt'] === 'string' &&
+    typeof value['updatedAt'] === 'string'
+  );
+}
+
+/**
+ * 保存ファイルの内容を解析して、コメントの配列にする
+ *
+ * @param text ファイルの内容
+ * @returns コメントの配列
+ * @throws ReviewStoreError JSON でない、版番号が違う、形が違うとき(内容は例外に含めない)
+ */
+export function parseStoreFile(text: string): StoredComment[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err: unknown) {
+    throw new ReviewStoreError(`${COMMENTS_FILE} が壊れています(JSON として読めません)`, { cause: err });
+  }
+  if (!isRecord(parsed) || parsed['version'] !== STORE_VERSION || !Array.isArray(parsed['comments'])) {
+    throw new ReviewStoreError(`${COMMENTS_FILE} の形式が想定と違います(version=${STORE_VERSION} の形ではありません)`);
+  }
+  const comments: unknown[] = parsed['comments'];
+  if (!comments.every(isStoredComment)) {
+    throw new ReviewStoreError(`${COMMENTS_FILE} に、形式が想定と違うコメントが含まれています`);
+  }
+  return comments;
+}
+
+/**
+ * コメントの保存先への、唯一の書き込み口
+ */
+export class ReviewStore {
+  private readonly filePath: string;
+  private readonly dataDir: string;
+  private readonly fs: StoreFs;
+  private readonly newId: () => string;
+  private readonly now: () => Date;
+  /** メモリ上のコメント(作成順)。書き込みに成功してから更新する */
+  private comments: StoredComment[] = [];
+  private loaded = false;
+  /** 直列化のための、末尾の処理 */
+  private tail: Promise<unknown> = Promise.resolve();
+  /** 一時ファイル名の重複を避ける連番 */
+  private tempCounter = 0;
+
+  /**
+   * @param options 保存先、ファイル操作、ID の生成、現在時刻
+   */
+  constructor(options: ReviewStoreOptions) {
+    this.dataDir = options.dataDir;
+    this.filePath = join(options.dataDir, COMMENTS_FILE);
+    this.fs = options.fs ?? realStoreFs;
+    this.newId = options.newId ?? randomUUID;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  /**
+   * 保存ファイルを読み込む(起動時に1回呼ぶ)
+   *
+   * ファイルが無ければ空で始める。壊れていたら、黙って空にせず失敗させる。
+   *
+   * @returns 読み込めたら解決する
+   * @throws ReviewStoreError 壊れている、または読めないとき
+   */
+  load(): Promise<void> {
+    return this.enqueue(async () => {
+      let text: string;
+      try {
+        text = await this.fs.readFile(this.filePath);
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          this.comments = [];
+          this.loaded = true;
+          return;
+        }
+        throw new ReviewStoreError(`${COMMENTS_FILE} を読み込めません`, { cause: err });
+      }
+      this.comments = parseStoreFile(text);
+      this.loaded = true;
+    });
+  }
+
+  /**
+   * コメントの一覧を返す(作成順。呼び出し側が変更しても内部に影響しない複製)
+   *
+   * @returns コメントの配列
+   * @throws ReviewStoreError load() の前に呼んだとき
+   */
+  list(): StoredComment[] {
+    this.assertLoaded();
+    return structuredClone(this.comments);
+  }
+
+  /**
+   * コメントを1件追加して保存する
+   *
+   * ID と作成日時はここで決める。保存に失敗したら、メモリ上にも追加しない。
+   *
+   * @param input コメントの内容
+   * @returns 保存したコメント(`status` は open、`replies` は空)
+   * @throws ReviewStoreError 保存できなかったとき
+   */
+  add(input: NewComment): Promise<StoredComment> {
+    return this.enqueue(async () => {
+      this.assertLoaded();
+      const at = this.now().toISOString();
+      const comment: StoredComment = {
+        id: this.newId(),
+        path: input.path,
+        anchor: { ...input.anchor },
+        body: input.body,
+        author: input.author,
+        type: input.type,
+        status: 'open',
+        replies: [],
+        resolution: null,
+        createdAt: at,
+        updatedAt: at,
+      };
+      await this.persist([...this.comments, comment]);
+      this.comments = [...this.comments, comment];
+      return structuredClone(comment);
+    });
+  }
+
+  /**
+   * 受け付け済みの書き込みがすべて終わるのを待つ(終了処理で使う)
+   *
+   * @returns キューが空になったら解決する。個々の失敗は、それぞれの呼び出し元に伝わっているのでここでは投げない
+   */
+  async drain(): Promise<void> {
+    await this.tail.catch(() => undefined);
+  }
+
+  /**
+   * 処理をキューの末尾に積む(前の処理の成否にかかわらず、順番に1つずつ実行する)
+   *
+   * @param task 実行する処理
+   * @returns 処理の結果
+   */
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(task, task);
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
+
+  /**
+   * load() 済みであることを確かめる
+   *
+   * @returns なし
+   * @throws ReviewStoreError 未読み込みのとき(空のまま書いて、既存のコメントを消さないため)
+   */
+  private assertLoaded(): void {
+    if (!this.loaded) throw new ReviewStoreError('ReviewStore が読み込まれていません');
+  }
+
+  /**
+   * コメント全体を、一時ファイルへ書いてから rename で置き換える
+   *
+   * 失敗したら一時ファイルを消す(`comments.json` は変わらない)。
+   *
+   * @param comments 保存するコメント(作成順)
+   * @returns 保存できたら解決する
+   * @throws ReviewStoreError 書き込みまたは rename に失敗したとき
+   */
+  private async persist(comments: readonly StoredComment[]): Promise<void> {
+    const data = `${JSON.stringify({ version: STORE_VERSION, comments }, null, 2)}\n`;
+    this.tempCounter += 1;
+    const tempPath = join(this.dataDir, `${COMMENTS_FILE}.${process.pid}.${this.tempCounter}.tmp`);
+    try {
+      await this.fs.writeFileSynced(tempPath, data);
+      await this.fs.rename(tempPath, this.filePath);
+    } catch (err: unknown) {
+      await this.removeTemp(tempPath);
+      throw new ReviewStoreError(`${COMMENTS_FILE} を保存できません`, { cause: err });
+    }
+  }
+
+  /**
+   * 一時ファイルを消す。無ければ何もしない
+   *
+   * 消せなかったときも、元の失敗を隠さないよう投げない(元のエラーを呼び出し元へ伝える)。
+   * 残った一時ファイルは、起動時の掃除(別タスク)で消す。
+   *
+   * @param tempPath 一時ファイルのパス
+   * @returns なし
+   */
+  private async removeTemp(tempPath: string): Promise<void> {
+    try {
+      await this.fs.unlink(tempPath);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      // 元の失敗を優先して伝える。ここの失敗は、残った一時ファイルが後で掃除されるだけで済む
+      process.stderr.write(`Review Viewer: 一時ファイルを消せませんでした(${errorCodeOf(err)})\n`);
+    }
+  }
+}
+
+/**
+ * 失敗の原因から、ログに出してよいエラーコードを取り出す
+ *
+ * @param err 捕まえた値
+ * @returns エラーコード。無ければ `不明`
+ */
+function errorCodeOf(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException).code;
+  return typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : '不明';
+}

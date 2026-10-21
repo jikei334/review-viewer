@@ -52,15 +52,16 @@ export function promptLine(question: string): Promise<string | undefined> {
 }
 
 /**
- * 実際のプロセスの引数・環境変数・端末から、対象リポジトリを決める
+ * 実際のプロセスの環境変数・端末と、解析済みの位置引数から、対象リポジトリを決める
  *
+ * @param args 位置引数(`--data-dir` などのオプションを除いたもの)
  * @returns 存在するディレクトリの絶対パス
  * @throws RepoDirError 決められなかったとき
  * @throws RepoDirCancelledError 入力が中断されたとき
  */
-export function resolveRepoDirFromProcess(): Promise<string> {
+export function resolveRepoDirFromProcess(args: readonly string[]): Promise<string> {
   return resolveRepoDir({
-    args: process.argv.slice(2),
+    args,
     env: process.env,
     baseDir: resolveBaseDir(process.env, process.cwd()),
     inspect: inspectPath,

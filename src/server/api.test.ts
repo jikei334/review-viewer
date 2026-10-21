@@ -287,7 +287,13 @@ describe('C-1: API にも Host の検証が掛かる', () => {
   it.each(['/api/reports', '/api/tree', '/api/file?path=src/example.ts'])(
     'C-1: GET %s は、Host が許可リスト外なら 403 で、業務ロジックを呼ばない',
     async (url) => {
-      const service = { listReports: vi.fn(), listTree: vi.fn(), getFile: vi.fn() };
+      const service = {
+        listReports: vi.fn(),
+        listTree: vi.fn(),
+        getFile: vi.fn(),
+        createComment: vi.fn(),
+        listComments: vi.fn(),
+      };
       const res = await get(url, { host: 'evil.com', deps: { service } });
       expect(res.status).toBe(403);
       expect(await res.text()).not.toContain('increment');
@@ -313,6 +319,10 @@ describe('C-5: onError は、ログと応答に出す内容を絞る', () => {
       listReports: () => Promise.reject(err),
       listTree: () => Promise.reject(err),
       getFile: () => Promise.reject(err),
+      createComment: () => Promise.reject(err),
+      listComments: () => {
+        throw err;
+      },
     };
   }
 

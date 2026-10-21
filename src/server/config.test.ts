@@ -8,7 +8,6 @@ describe('T1-1: loadConfig の既定値(SPEC §2.5)', () => {
   it('T1-1: 環境変数が何も無ければ、SPEC §2.5 の既定値になる', () => {
     expect(loadConfig({})).toEqual({
       repoDir: '/repo',
-      dataDir: '/data',
       host: '127.0.0.1',
       port: 3000,
       allowedHosts: ['127.0.0.1:3000', 'localhost:3000'],
@@ -53,12 +52,15 @@ describe('T1-1: loadConfig の指定値', () => {
     });
     expect(config).toEqual({
       repoDir: '/srv/repo',
-      dataDir: '/srv/data',
       host: '192.168.1.10',
       port: 8080,
       allowedHosts: ['review.test:8080'],
       allowedOrigins: ['http://review.test:8080'],
     });
+  });
+
+  it('S2-9: DATA_DIR は loadConfig では読まない(保存先は data-dir.ts が決める)', () => {
+    expect(loadConfig({ DATA_DIR: '/srv/data' })).not.toHaveProperty('dataDir');
   });
 
   it('C-1: ALLOWED_HOSTS を指定すると、既定の値は含まれない', () => {
