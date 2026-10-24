@@ -13,6 +13,14 @@ import {
   ReviewService,
 } from './ReviewService.js';
 
+/** コメントを使わないテスト用の、ReviewStore の代わり(呼ばれたら失敗する) */
+const unusedStore = {
+  list: vi.fn(() => {
+    throw new Error('store.list は呼ばれない想定');
+  }),
+  add: vi.fn(() => Promise.reject(new Error('store.add は呼ばれない想定'))),
+};
+
 /**
  * 一覧の1件を作る
  *
@@ -82,7 +90,7 @@ describe('T1-2: ReviewService(RepoReader を差し替えて確かめる)', () =>
     const listDirectory = vi.fn(() =>
       Promise.resolve({ path: REPORTS_DIR, entries: [entry('a.md', '2026-10-12T00:00:00.000Z')] })
     );
-    const service = new ReviewService({ repoReader: { listDirectory, readFile: vi.fn() } });
+    const service = new ReviewService({ store: unusedStore, repoReader: { listDirectory, readFile: vi.fn() } });
     expect(await service.listReports()).toEqual([
       { name: 'a.md', path: 'reports/a.md', modifiedAt: '2026-10-12T00:00:00.000Z' },
     ]);
@@ -91,6 +99,7 @@ describe('T1-2: ReviewService(RepoReader を差し替えて確かめる)', () =>
 
   it('S1-1: reports/ が無い(または拒否対象)なら、空の一覧を返す', async () => {
     const service = new ReviewService({
+      store: unusedStore,
       repoReader: {
         listDirectory: () => Promise.reject(new RepoAccessError('not_found', 'missing')),
         readFile: vi.fn(),
@@ -101,6 +110,7 @@ describe('T1-2: ReviewService(RepoReader を差し替えて確かめる)', () =>
 
   it('S1-1: それ以外のエラーは、握りつぶさずに伝える', async () => {
     const service = new ReviewService({
+      store: unusedStore,
       repoReader: { listDirectory: () => Promise.reject(new Error('disk failure')), readFile: vi.fn() },
     });
     await expect(service.listReports()).rejects.toThrow('disk failure');
@@ -113,7 +123,7 @@ describe('T1-2: ReviewService(フィクスチャのリポジトリで確かめ�
 
   beforeAll(async () => {
     repo = await createTempRepo();
-    service = new ReviewService({ repoReader: new RepoReader({ repoDir: repo.repoDir }) });
+    service = new ReviewService({ store: unusedStore, repoReader: new RepoReader({ repoDir: repo.repoDir }) });
 
     // 更新日時を、ファイル名の順とは逆にしておく(どちらで並べているかを区別できるようにする)
     const reports: Array<[name: string, mtime: string]> = [
@@ -167,7 +177,7 @@ describe('T1-2: ReviewService(フィクスチャのリポジトリで確かめ�
   it('S1-1: reports/ が無いリポジトリでは、空の一覧を返す', async () => {
     const empty = await createTempRepo();
     try {
-      const emptyService = new ReviewService({ repoReader: new RepoReader({ repoDir: empty.repoDir }) });
+      const emptyService = new ReviewService({ store: unusedStore, repoReader: new RepoReader({ repoDir: empty.repoDir }) });
       expect(await emptyService.listReports()).toEqual([]);
     } finally {
       await empty.cleanup();
@@ -179,7 +189,7 @@ describe('T1-2: ReviewService(フィクスチャのリポジトリで確かめ�
     try {
       await other.writeOutside('reports/outside-report.md', '# 外\n');
       await other.link('../outside/reports', 'reports');
-      const otherService = new ReviewService({ repoReader: new RepoReader({ repoDir: other.repoDir }) });
+      const otherService = new ReviewService({ store: unusedStore, repoReader: new RepoReader({ repoDir: other.repoDir }) });
       expect(await otherService.listReports()).toEqual([]);
     } finally {
       await other.cleanup();

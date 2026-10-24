@@ -8,22 +8,31 @@
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ServerConfig } from './config.js';
+import { InputError, parseCommentFilter, parseCreateCommentInput } from './comment-input.js';
 import { RepoAccessError, type RepoAccessCode } from './path-policy.js';
 import { RepoReader } from './RepoReader.js';
 import { checkRequest } from './request-guard.js';
 import { ReviewService } from './ReviewService.js';
+import { ReviewStore } from './ReviewStore.js';
 import type { StaticAssets } from './static-assets.js';
 
-/** アプリの組み立てに必要な設定(許可リストと、対象リポジトリ) */
-export type AppConfig = Pick<ServerConfig, 'allowedHosts' | 'allowedOrigins' | 'repoDir'>;
+/** アプリの組み立てに必要な設定(許可リストと、対象リポジトリと、保存先) */
+export type AppConfig = Pick<ServerConfig, 'allowedHosts' | 'allowedOrigins' | 'repoDir'> &
+  Partial<Pick<ServerConfig, 'dataDir'>>;
 
 /** ログの出力先(1行分の文字列を受け取る) */
 export type AppLogger = (message: string) => void;
 
 /** アプリが使うもの(省略したものは、設定から作る。テストで差し替えるためにある) */
 export interface AppDeps {
-  /** 業務ロジック。省略時は、`config.repoDir` を読む RepoReader で作る */
-  readonly service?: Pick<ReviewService, 'listReports' | 'listTree' | 'getFile'>;
+  /**
+   * 業務ロジック。省略時は、`config.repoDir` を読む RepoReader と、`config.dataDir` の ReviewStore で作る
+   * (この ReviewStore は読み込んでいないので、コメントの API は失敗する。起動の入口は、読み込み済みのものを渡す)
+   */
+  readonly service?: Pick<
+    ReviewService,
+    'listReports' | 'listTree' | 'getFile' | 'createComment' | 'listComments'
+  >;
   /** ログの出力先。省略時は標準エラー */
   readonly log?: AppLogger;
   /** 画面の静的ファイルの配信元。省略時は、画面を配信しない(`GET /` は 404) */
@@ -143,6 +152,43 @@ function readPathQuery(c: Context): string {
 }
 
 /**
+ * クエリの値を1つだけ取り出す(省略は undefined)
+ *
+ * 同じ名前が2つ以上あるリクエストは、どれを検証したのかが曖昧になるので受け付けない。
+ *
+ * @param c リクエストのコンテキスト
+ * @param name クエリの名前
+ * @returns 値。省略なら undefined
+ * @throws InputError 2つ以上あるとき
+ */
+function readSingleQuery(c: Context, name: string): string | undefined {
+  const values = c.req.queries(name) ?? [];
+  if (values.length > 1) throw new InputError('クエリが重複しています');
+  return values[0];
+}
+
+/**
+ * リクエストの本文を JSON として読む
+ *
+ * @param c リクエストのコンテキスト
+ * @returns パースした値
+ * @throws InputError 本文を読めない、または JSON でないとき(本文の内容はエラーに含めない)
+ */
+async function readJsonBody(c: Context): Promise<unknown> {
+  let text: string;
+  try {
+    text = await c.req.text();
+  } catch {
+    throw new InputError('リクエストの本文を読めません');
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new InputError('リクエストの本文が JSON ではありません');
+  }
+}
+
+/**
  * Hono アプリを組み立てる
  *
  * Host / Origin の検証は、最初のミドルウェアとして、すべてのパスとメソッドに掛ける
@@ -156,7 +202,11 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Hono {
   const app = new Hono();
   const log = deps.log ?? logToStderr;
   const service =
-    deps.service ?? new ReviewService({ repoReader: new RepoReader({ repoDir: config.repoDir }) });
+    deps.service ??
+    new ReviewService({
+      repoReader: new RepoReader({ repoDir: config.repoDir }),
+      store: new ReviewStore({ dataDir: config.dataDir ?? '' }),
+    });
 
   app.use('*', async (c, next) => {
     // 応答の種類を、ブラウザに中身から推測させない(JSON を HTML として解釈させない。S1-7)
@@ -195,6 +245,20 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Hono {
   app.get('/api/tree', async (c) => c.json(await service.listTree(readPathQuery(c))));
   app.get('/api/file', async (c) => c.json(await service.getFile(readPathQuery(c))));
 
+  // コメント。応答・ログに本文やパスの実体を出さない(C-5)。Web からのコメントは author=human 固定
+  app.post('/api/comments', async (c) => {
+    const input = parseCreateCommentInput(await readJsonBody(c));
+    return c.json(await service.createComment(input, 'human'), 201);
+  });
+  app.get('/api/comments', (c) => {
+    const filter = parseCommentFilter({
+      path: readSingleQuery(c, 'path'),
+      status: readSingleQuery(c, 'status'),
+      type: readSingleQuery(c, 'type'),
+    });
+    return c.json({ comments: service.listComments(filter) });
+  });
+
   // 画面の静的ファイル(GET のみ。対応表に無いパスは 404)。API のルートより後に置く
   const assets = deps.assets;
   if (assets !== undefined) {
@@ -214,6 +278,10 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Hono {
       // 応答に載せるのは、固定の分類だけ。指定されたパス、実体のパス、拒否の理由は載せない
       // (秘密ファイルが存在するかどうかを、応答の違いから調べられないようにする)
       return c.json({ error: err.code }, ACCESS_STATUS[err.code]);
+    }
+    if (err instanceof InputError) {
+      // メッセージは固定の文字列(受け取った値を含まない)
+      return c.json({ error: 'invalid_input', message: err.message }, 400);
     }
     if (err instanceof HTTPException) {
       return err.getResponse();
