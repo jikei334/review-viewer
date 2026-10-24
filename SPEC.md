@@ -61,7 +61,7 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 | `resolution` | 解決時の説明(任意) |
 | `createdAt` / `updatedAt` | 日時 |
 
-保存先は `/data/comments.json`。書き込みは一時ファイルへ書いてから rename する(途中で落ちても壊れない)。書き込むのはこのサーバー1プロセスだけで、MCP 経由の書き込みも同じプロセスを通す。
+保存先は、§2.5「保存先の決め方」で決まったディレクトリの `comments.json`。書き込みは一時ファイルへ書いてから rename する(途中で落ちても壊れない)。書き込むのはこのサーバー1プロセスだけで、MCP 経由の書き込みも同じプロセスを通す。
 
 ### 2.2 Web API
 
@@ -77,6 +77,48 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 | `GET /healthz` | 起動確認用。受け付け可能なら 200 を返す(Host 検証の対象) |
 
 - `GET /api/tree` の `path` が空、または省略されたときは、リポジトリのルートを指す
+
+#### コメント API の形
+
+**Comment**(JSON)は、§2.1 の項目に加えて、次の形を持つ。
+
+```
+{ id, path, anchor: { startLine, endLine, quote, docHash }, body, author, type, status,
+  replies: [{ id, author, body, createdAt }], resolution, createdAt, updatedAt,
+  position: { state, startLine, endLine } }
+```
+
+- 日時は ISO 8601(UTC)の文字列。`resolution` は文字列または `null`
+- `position` は、読み取りのたびに現在のファイルから計算する(保存しない。元の `anchor` は変えない)。`state` は `"exact"`(今も `anchor` の位置に `quote` がある)、`"moved"`(別の位置で見つかった)、`"lost"`(見つからない、ファイルが無い、読めない)。`"lost"` のとき `startLine` と `endLine` は `null`
+- 行は、ファイルの内容を `\n` で分けたもの(末尾の改行の後ろは行にしない。`\r\n` の `\r` は含めない)。1 始まりで、画面の `source-line` の行番号と同じ
+- `quote` は、`startLine` から `endLine` までの行を `\n` でつないだ文字列。`docHash` は、コメント時点のファイル内容の SHA-256 の16進文字列
+
+**`POST /api/comments`**
+
+- リクエスト(JSON): `{ path, startLine, endLine, body, type }`。`type` は `"note"` または `"instruction"`。`startLine <= endLine <= ファイルの行数`
+- `author` は受け付けない。リクエストに `author` が含まれていたら 400(サーバーが `"human"` に固定する)。`quote` と `docHash` はサーバーが作る
+- `path` は S1-4・S1-5 と同じ規則で検証する(形式からリポジトリ外と分かるものは 400、拒否対象と存在しないパスは 404)
+- 応答: 201 と Comment 1件(`status` は `"open"`、`replies` は空)
+
+**`GET /api/comments?path=&status=&type=`**
+
+- 応答: 200 と `{ comments: [...] }`(作成日時の昇順。同時刻は作成順)。`path`・`status`・`type` は、指定したものだけで絞る。`status`・`type` の値が不正なら 400
+- `path` の絞り込みは、保存されているコメントの `path` との文字列の比較だけで行い、ファイルシステムを読まない。存在しないパスも、拒否対象のパス(秘密ファイル、`.gitignore` の対象、リポジトリの外を指すシンボリックリンクなど)も、区別せずに 200 の空の一覧を返す。形式からリポジトリ外と分かるパス(`..` の要素を含む、絶対パス、NUL 文字を含む)は 400
+
+**`PATCH /api/comments/:id`**
+
+- リクエスト: `{ status, resolution? }`。`status` は `"open"` / `"resolved"` / `"wontfix"` のどれからどれへも変えられる(同じ値への変更も成功)。値が3つ以外なら 400。`"resolved"` / `"wontfix"` のとき `resolution`(任意の説明)を付けられる。`"open"` にすると `resolution` は `null` になる
+- `body` など、ほかの項目は変更できない(含まれていたら 400)。応答: 200 と更新後の Comment 1件
+
+**`POST /api/comments/:id/replies`**
+
+- リクエスト: `{ body }`。`author` は `"human"` に固定(含まれていたら 400)。応答: 201 と更新後の Comment 1件
+
+**エラー**
+
+- 入力の誤り(JSON でない、必須項目の欠落、型や値の誤り、未知のフィールド、行範囲の誤り、本文が空または 32 KiB(UTF-8 で 32,768 バイト)超、巨大またはバイナリのファイルへのコメント)は 400
+- 作成時の拒否対象または存在しない `path`、存在しない `id` は 404
+- 応答に、`path` の実体や拒否の理由を載せない(C-5)
 
 ### 2.3 MCP ツール
 
@@ -113,7 +155,7 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 | 環境変数 | 既定 | 内容 |
 |---|---|---|
 | `REPO_DIR` | `/repo` | 対象リポジトリ(読み取り専用として扱う)。決め方は下の「対象リポジトリの決め方」に従う |
-| `DATA_DIR` | `/data` | コメントの保存先(書き込み可) |
+| `DATA_DIR` | (下の「保存先の決め方」に従う) | コメントの保存先(書き込み可) |
 | `HOST` | `127.0.0.1` | bind アドレス |
 | `PORT` | `3000` | ポート |
 | `REVIEW_VIEWER_TOKEN` | 未設定 | MCP のトークン。未設定なら `/mcp` は無効 |
@@ -129,6 +171,15 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 5. 1〜3 で決まらず、標準入力が端末でないときは、理由を示して終了コード 0 以外で終了する
 
 1・2 で指定されたパスが存在するディレクトリでないときは、4 の入力には進まず、待ち受けを始めずに、理由を示して終了コード 0 以外で終了する(指定の誤りに気づけるようにするため)。理由のメッセージに、秘密の情報を含めない(C-5)
+
+保存先の決め方(上から順に、最初に決まったものを使う):
+
+1. 起動時の引数 `--data-dir <パス>`(例: `npm start -- ../my-project --data-dir ~/rv-data`。対象リポジトリの引数と併用できる)。相対パスは、対象リポジトリの引数と同じく、起動したディレクトリ(npm 経由なら `INIT_CWD`)を基準にする
+2. 環境変数 `DATA_DIR`
+3. `/data`(存在する場合。コンテナの既定)
+4. OS の一時ディレクトリ(`TMPDIR` を尊重し、無ければ `/tmp`)の下の `review-viewer-<UID>`。所有者だけが読み書きできる権限(0700)で作る。すでにあるものが、シンボリックリンク、他人の所有、または権限が緩い(グループ・他人に権限がある)ときは、待ち受けを始めずに、理由を示して終了コード 0 以外で終了する。この保存先を使うときは、起動時に「一時的な保存先(OS の再起動などで消えることがある)」と表示する
+
+1・2 で指定されたパス、または 3・4 の結果が、使えない(作れない、書き込めない)とき、または対象リポジトリの中にあるときは、待ち受けを始めずに、理由を示して終了コード 0 以外で終了する(1・2 で指定したパスが使えないときに、次の候補には進まない)。理由のメッセージに、秘密の情報を含めない(C-5)。`npm run dev` も同じ決め方に従う
 
 ---
 
@@ -228,7 +279,34 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 - [ ] **S2-5** ファイルが変更されて行がずれても、`quote` で位置が追従される。`quote` が複数見つかる場合は、元の位置に最も近いものを選ぶ。見つからなければ「位置不明」として残る
 - [ ] **S2-6** コメント本文の HTML は無害化して表示される
 - [ ] **S2-7** ステータスは、open → resolved / wontfix → open と遷移できる。不正な値は 400
-- [ ] **S2-8** `/data` 以外に書き込まない(`/repo` の内容が、操作の前後で変わらないことをテストで確認する)
+- [ ] **S2-8** 保存先(§2.5「保存先の決め方」で決まったディレクトリ)以外に書き込まない(対象リポジトリの内容が、操作の前後で変わらないことをテストで確認する)
+- [ ] **S2-9** 保存先(§2.5「保存先の決め方」)が使えない(作れない、書き込めない)、対象リポジトリの中にある、または一時ディレクトリの既存のものが安全でない(シンボリックリンク、他人の所有、権限が緩い)とき、サーバーは待ち受けを始めずに、理由を示して終了コード 0 以外で終了する。引数 `--data-dir`、環境変数 `DATA_DIR`、`/data`、一時ディレクトリの順に、最初に決まったものが使われる
+
+### 5.1 画面の契約(ステージ2で追加。システムテストが依存してよい要素)
+
+§4.1 の「要素の特定方法」の考え方(意味のある HTML 要素で特定し、不足する箇所だけ `data-testid` を約束する。クラス名・ID・入れ子などの構造は根拠にしない)に従い、次を追加で約束する。
+
+| 要素 | 特定方法 | 補足 |
+|---|---|---|
+| コメント追加ボタン | `[data-testid="comment-add-button"]` | `source-view` または `report-content` の中でテキストを選択すると現れ、選択を解除すると消える。クリックでコメントフォームが開く |
+| コメントフォーム | `[data-testid="comment-form"]` | この中に次の3つがある |
+| 本文の入力 | `[data-testid="comment-body-input"]` | `textarea` |
+| 種類の選択 | `[data-testid="comment-type-select"]` | `select`。`option` の `value` は `note`(メモ)、`instruction`(AI への指示) |
+| 送信 | `[data-testid="comment-submit"]` | `button`。成功するとフォームが閉じ、一覧に現れる(再読み込み不要) |
+| コメント一覧 | `[data-testid="comment-list"]` | 既定では全ファイルのコメントを、ファイルごとにまとめて表示する |
+| ファイルごとのまとまり | `[data-testid="comment-group"]` | `data-path` に対象のパス。一覧の中にある |
+| コメント1件 | `[data-testid="comment-item"]` | `data-comment-id`、`data-status`(`open` / `resolved` / `wontfix`)、`data-type`(`note` / `instruction`)、`data-author`、`data-position`(`exact` / `moved` / `lost`)を持つ。`lost` のときは「位置不明」という文字を含む。対象のパスと行番号を文字として含む |
+| コメント本文 | `[data-testid="comment-body"]` | コメント1件の中。Markdown を無害化した HTML |
+| 返信 | `[data-testid="comment-reply"]` | コメント1件の中。`data-author` を持つ。本文は無害化した HTML |
+| 返信の入力・送信 | `[data-testid="comment-reply-input"]`(`textarea`)、`[data-testid="comment-reply-submit"]`(`button`) | コメント1件の中 |
+| ステータスの変更 | `[data-testid="comment-status-select"]` | コメント1件の中の `select`。`option` の `value` は `open`、`resolved`、`wontfix`。変更すると保存される |
+| 絞り込み(ステータス) | `[data-testid="comment-filter-status"]` | `select`。`value` は空文字(すべて)、`open`、`resolved`、`wontfix` |
+| 絞り込み(種類) | `[data-testid="comment-filter-type"]` | `select`。`value` は空文字(すべて)、`note`、`instruction` |
+| 絞り込み(ファイル) | `[data-testid="comment-filter-path"]` | `select`。`value` は空文字(すべて)、またはコメントのあるパス |
+
+- ソースで選択したときの行範囲は、選択が触れる最初と最後の `source-line` の `data-line`
+- レポートで選択したときの行範囲は、選択が触れるブロック要素(段落、見出し、リスト項目、表の行、コードブロック)の、元の Markdown ファイル上の行範囲(最初のブロックの開始行から、最後のブロックの終了行まで)
+- 絞り込みを変えると、一覧が即座に更新される。条件に合うコメントが無いとき、`comment-item` は 0 件
 
 ---
 
