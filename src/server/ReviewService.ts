@@ -7,8 +7,14 @@
  * 暫定の方針(SPEC に定めが無く、人間に確認中のもの)は、このファイルの定数と
  * 小さな関数(`REPORTS_DIR`、`isReportFile`、`compareReportsNewestFirst`)にまとめてある。
  */
+import { buildQuote, hashContent, splitLines } from './comment-anchor.js';
+import { InputError, type CommentFilter, type CreateCommentInput } from './comment-input.js';
 import { RepoAccessError } from './path-policy.js';
 import type { RepoEntry, RepoEntryType, RepoFile, RepoReader } from './RepoReader.js';
+import type { CommentAuthor, ReviewStore, StoredComment } from './ReviewStore.js';
+
+/** API で返すコメント(`position` は後続のタスクで足す) */
+export type Comment = StoredComment;
 
 /** レポートを置くディレクトリ(リポジトリ相対) */
 export const REPORTS_DIR = 'reports';
@@ -45,6 +51,8 @@ export interface TreeListing {
 export interface ReviewServiceDeps {
   /** ファイルを読む入口 */
   readonly repoReader: Pick<RepoReader, 'listDirectory' | 'readFile'>;
+  /** コメントを保存する入口(読み込み済みのもの) */
+  readonly store: Pick<ReviewStore, 'list' | 'add'>;
 }
 
 /**
@@ -99,12 +107,14 @@ export function compareTreeEntries(
  */
 export class ReviewService {
   private readonly repoReader: ReviewServiceDeps['repoReader'];
+  private readonly store: ReviewServiceDeps['store'];
 
   /**
-   * @param deps ファイルを読む入口
+   * @param deps ファイルを読む入口と、コメントを保存する入口
    */
   constructor(deps: ReviewServiceDeps) {
     this.repoReader = deps.repoReader;
+    this.store = deps.store;
   }
 
   /**
@@ -159,5 +169,60 @@ export class ReviewService {
    */
   async getFile(path: string): Promise<RepoFile> {
     return this.repoReader.readFile(path);
+  }
+
+  /**
+   * コメントを作成して保存する(S2-1、S2-4)
+   *
+   * 対象のファイルは RepoReader で読む(パスの検証は RepoReader に任せる。別の検証は作らない)。
+   * `quote` と `docHash` はここで作る。`author` は呼び出し側(Web は human、MCP は ai)が決める。
+   *
+   * @param input 検証済みの入力(`parseCreateCommentInput` の結果)
+   * @param author コメントの作者
+   * @returns 作成したコメント
+   * @throws RepoAccessError パスが存在しない・拒否対象・ディレクトリのとき(404)
+   * @throws InputError ファイルが巨大またはバイナリ、行範囲がファイルの行数を超えるとき(400)
+   * @throws ReviewStoreError 保存できなかったとき
+   */
+  async createComment(input: CreateCommentInput, author: CommentAuthor): Promise<Comment> {
+    const file = await this.repoReader.readFile(input.path);
+    if (file.kind !== 'text') throw new InputError('このファイルにはコメントを付けられません');
+    const lines = splitLines(file.content);
+    if (input.endLine > lines.length) throw new InputError('endLine がファイルの行数を超えています');
+    return this.store.add({
+      // RepoReader が返した正規化済みのパスを保存する
+      path: file.path,
+      anchor: {
+        startLine: input.startLine,
+        endLine: input.endLine,
+        quote: buildQuote(lines, input.startLine, input.endLine),
+        docHash: hashContent(file.content),
+      },
+      body: input.body,
+      author,
+      type: input.type,
+    });
+  }
+
+  /**
+   * コメントの一覧を返す(作成日時の昇順。同時刻は作成順)(S2-1、S2-4)
+   *
+   * `path` の絞り込みは、保存されているコメントの `path` との文字列の比較だけで行い、
+   * RepoReader(ファイルシステム)を呼ばない。存在しない・拒否対象のパスも、空の一覧になる。
+   *
+   * @param filter 指定した条件だけを持つ絞り込み(形式は検証済み)
+   * @returns コメントの配列
+   */
+  listComments(filter: CommentFilter = {}): Comment[] {
+    // 保存順は作成順。安定ソートなので、同じ日時は作成順のまま残る
+    return this.store
+      .list()
+      .filter(
+        (c) =>
+          (filter.path === undefined || c.path === filter.path) &&
+          (filter.status === undefined || c.status === filter.status) &&
+          (filter.type === undefined || c.type === filter.type)
+      )
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
   }
 }

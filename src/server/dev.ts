@@ -15,10 +15,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createServer, type Plugin } from 'vite';
 import { createApp } from './app.js';
+import type { ReviewStore } from './ReviewStore.js';
 import { loadConfig } from './config.js';
 import { isApiPath } from './dev-routes.js';
+import { resolveDataDirFromProcess } from './data-dir-io.js';
+import { parseLaunchArgs } from './launch-args.js';
 import { RepoDirCancelledError } from './repo-dir.js';
 import { resolveRepoDirFromProcess } from './repo-dir-io.js';
+import { openReviewService } from './service-factory.js';
 import { describeError } from './server.js';
 
 /** 開発サーバーの既定のポート(SPEC の PORT の既定 3000 は本番用。開発では Vite の慣例に合わせる) */
@@ -74,11 +78,16 @@ function apiPlugin(
 async function main(): Promise<void> {
   // PORT 未設定なら開発用の既定。許可リストの既定値も、このポートに追従する
   const base = loadConfig({ ...process.env, PORT: process.env['PORT'] || DEV_DEFAULT_PORT });
-  const server: { vite?: Awaited<ReturnType<typeof createServer>> } = {};
+  const launchArgs = parseLaunchArgs(process.argv.slice(2));
+  const server: { vite?: Awaited<ReturnType<typeof createServer>>; store?: ReviewStore } = {};
 
   const stop = (signal: string): void => {
     log(`Review Viewer: ${signal} を受け取りました。終了します`);
-    const closing = server.vite === undefined ? Promise.resolve() : server.vite.close();
+    const closing = (async (): Promise<void> => {
+      if (server.vite !== undefined) await server.vite.close();
+      // 受け付け済みの書き込みの完了を待つ
+      if (server.store !== undefined) await server.store.drain();
+    })();
     closing.then(
       () => process.exit(0),
       (err: unknown) => {
@@ -92,7 +101,7 @@ async function main(): Promise<void> {
 
   let repoDir: string;
   try {
-    repoDir = await resolveRepoDirFromProcess();
+    repoDir = await resolveRepoDirFromProcess(launchArgs.positional);
   } catch (err: unknown) {
     if (err instanceof RepoDirCancelledError) {
       log(`Review Viewer: ${err.message}。終了します`);
@@ -100,8 +109,17 @@ async function main(): Promise<void> {
     }
     throw err;
   }
-  const config = { ...base, repoDir };
-  const app = createApp(config, { log });
+  // 本番と同じ保存先の決め方に従う(`./data` の特別扱いはしない)
+  const dataDir = resolveDataDirFromProcess(repoDir, launchArgs.dataDir);
+  const config = { ...base, repoDir, dataDir: dataDir.dir };
+  if (dataDir.temporary) {
+    log(`Review Viewer: 保存先は一時的な保存先(OS の再起動などで消えることがある)です: ${dataDir.dir}`);
+  } else {
+    log(`Review Viewer: 保存先: ${dataDir.dir}`);
+  }
+  const { service, store } = await openReviewService(config);
+  server.store = store;
+  const app = createApp(config, { log, service });
 
   server.vite = await createServer({
     configFile: VITE_CONFIG_FILE,

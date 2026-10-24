@@ -1221,3 +1221,163 @@ describe('C-4: テキストの検出関数(scanText、scanNpmScripts)と、許�
     expect(applyAllowlist([], [stale, optional]).unusedEntries).toEqual([stale]);
   });
 });
+
+// ─── T2-2: ファイルを書く入口の所在(CLAUDE.md の絶対ルール6、S2-8) ───────────────
+
+/**
+ * 書き込み系の `fs` API を使ってよいファイル(ここ以外で使うと、テストが落ちる)
+ *
+ * - ReviewStore.ts: コメントを保存先に書く唯一の入口
+ * - data-dir-io.ts: 保存先のディレクトリを(親があれば)作る、起動時の確認
+ * どちらも書き込み先は保存先だけ。対象リポジトリ(`/repo`)には書かない。
+ */
+const WRITE_ALLOWED_FILES: readonly string[] = ['src/server/ReviewStore.ts', 'src/server/data-dir-io.ts'];
+
+/** 書き込み系の `fs` API の名前(`open` は別に判定する) */
+const FS_WRITE_APIS: ReadonlySet<string> = new Set([
+  'writeFile', 'writeFileSync', 'appendFile', 'appendFileSync', 'writeSync',
+  'mkdir', 'mkdirSync', 'mkdtemp', 'mkdtempSync',
+  'rename', 'renameSync', 'rm', 'rmSync', 'rmdir', 'rmdirSync', 'unlink', 'unlinkSync',
+  'copyFile', 'copyFileSync', 'cp', 'cpSync',
+  'truncate', 'truncateSync', 'ftruncate', 'ftruncateSync',
+  'symlink', 'symlinkSync', 'link', 'linkSync',
+  'chmod', 'chmodSync', 'chown', 'chownSync', 'utimes', 'utimesSync',
+  'createWriteStream',
+]);
+
+/** ファイルシステムのモジュール名 */
+const FS_MODULES: ReadonlySet<string> = new Set(['fs', 'node:fs', 'fs/promises', 'node:fs/promises']);
+
+/** `open` の第2引数に現れたら、書き込みを伴うとみなすフラグ */
+const OPEN_WRITE_FLAGS = /O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND/;
+
+/**
+ * `open` / `openSync` の呼び出しが、読み取り専用かを調べる
+ *
+ * 読み取り専用と認めるのは、フラグが文字列リテラルの `'r'`、または `O_RDONLY` を含み書き込み系のフラグを含まないもの。
+ * フラグを省略した呼び出しも `'r'` と同じ(読み取り専用)。それ以外は、書き込みとみなす。
+ *
+ * @param call 呼び出し
+ * @param sourceFile 呼び出しを含むソース
+ * @returns 読み取り専用と確認できれば true
+ */
+function isReadOnlyOpen(call: ts.CallExpression, sourceFile: ts.SourceFile): boolean {
+  const flags = call.arguments[1];
+  if (flags === undefined) return true;
+  if (ts.isStringLiteralLike(flags)) return flags.text === 'r';
+  const text = flags.getText(sourceFile);
+  return text.includes('O_RDONLY') && !OPEN_WRITE_FLAGS.test(text);
+}
+
+/**
+ * ソースコードから、書き込み系の `fs` API の使用を見つける
+ *
+ * `fs` のモジュール名(文字列)が現れるファイルだけを対象にする(`fs` を使わないファイルの、同名の識別子に反応しない)。
+ * 識別子の名前で見るので、`import { writeFile }`、`fs.writeFile(...)`、`nodeFs.promises.writeFile(...)` のどれも拾う。
+ *
+ * @param file ファイルの名前(拡張子で TS / TSX を判別する)
+ * @param text ソースコード
+ * @returns 見つかった API の名前と行番号(昇順)。`fs` のモジュール名が無いファイルは空
+ */
+function findFsWrites(file: string, text: string): Array<{ api: string; line: number }> {
+  const sourceFile = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKindOf(file));
+  let importsFs = false;
+  const found: Array<{ api: string; line: number }> = [];
+  const lineOf = (node: ts.Node): number => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteralLike(node) && FS_MODULES.has(node.text)) importsFs = true;
+    if (ts.isIdentifier(node) && FS_WRITE_APIS.has(node.text)) found.push({ api: node.text, line: lineOf(node) });
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : '';
+      if ((name === 'open' || name === 'openSync') && !isReadOnlyOpen(node, sourceFile)) {
+        found.push({ api: name, line: lineOf(node) });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return importsFs ? found.sort((a, b) => a.line - b.line) : [];
+}
+
+/**
+ * src/ の、テストでもフィクスチャでもないソースコードのファイルを集める
+ *
+ * @param relativeDir ルートからの相対パス
+ * @returns ルートからの相対パス(`/` 区切り)の配列
+ */
+function listProductionSources(relativeDir = 'src'): string[] {
+  const result: string[] = [];
+  for (const entry of readdirSync(resolve(ROOT_DIR, relativeDir), { withFileTypes: true })) {
+    const relativePath = `${relativeDir}/${entry.name}`;
+    if (entry.isDirectory()) {
+      if (entry.name === '__fixtures__') continue;
+      result.push(...listProductionSources(relativePath));
+    } else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\.(ts|tsx)$/.test(entry.name) && relativePath !== SELF_FILE) {
+      result.push(relativePath);
+    }
+  }
+  return result.sort();
+}
+
+describe('S2-8・ルール6: 書き込み系の fs API は、ReviewStore.ts と保存先の確認(data-dir-io.ts)にしか無い', () => {
+  let sources: string[];
+  let writes: Map<string, Array<{ api: string; line: number }>>;
+
+  beforeAll(() => {
+    sources = listProductionSources();
+    writes = new Map(sources.map((file) => [file, findFsWrites(file, readFileSync(resolve(ROOT_DIR, file), 'utf8'))]));
+  });
+
+  it('S2-8: 走査が、サーバーのコードを実際に読んでいる', () => {
+    expect(sources).toEqual(
+      expect.arrayContaining(['src/server/ReviewStore.ts', 'src/server/data-dir-io.ts', 'src/server/RepoReader.ts', 'src/server/app.ts'])
+    );
+    expect(sources.filter((file) => file.startsWith('src/')).length).toBeGreaterThanOrEqual(15);
+    expect(sources.filter((file) => /\.test\./.test(file) || file.includes('__fixtures__'))).toEqual([]);
+  });
+
+  it('S2-8: 許可したファイル以外に、書き込み系の fs API を使うコードが無い', () => {
+    const violations = [...writes.entries()]
+      .filter(([file, found]) => found.length > 0 && !WRITE_ALLOWED_FILES.includes(file))
+      .flatMap(([file, found]) => found.map((f) => `${file}:${f.line} ${f.api}`));
+    expect(violations).toEqual([]);
+  });
+
+  it('S2-8: 許可したファイルは、実際に書き込み系の API を使っている(検出が働いていることの確認を兼ねる)', () => {
+    for (const file of WRITE_ALLOWED_FILES) {
+      expect(writes.get(file)?.length ?? 0, file).toBeGreaterThan(0);
+    }
+  });
+
+  it('S2-8: 読み取り専用のファイル(RepoReader.ts など)は、open を使っても検出されない', () => {
+    expect(writes.get('src/server/RepoReader.ts')).toEqual([]);
+    expect(writes.get('src/server/static-assets.ts')).toEqual([]);
+    expect(writes.get('src/server/repo-dir-io.ts')).toEqual([]);
+  });
+
+  it.each([
+    ['import { writeFile }', `import { writeFile } from 'node:fs/promises';\nawait writeFile(p, d);`, ['writeFile', 'writeFile']],
+    ['fs.writeFileSync', `import fs from 'node:fs';\nfs.writeFileSync(p, d);`, ['writeFileSync']],
+    ['namespace import の mkdir', `import * as fs from 'fs';\nfs.mkdirSync(p);`, ['mkdirSync']],
+    ['promises 経由の rename', `import { promises as f } from 'node:fs';\nawait f.rename(a, b);`, ['rename']],
+    ['rm', `import { rm } from 'fs/promises';`, ['rm']],
+    ['createWriteStream', `import { createWriteStream } from 'node:fs';`, ['createWriteStream']],
+    ['open(書き込み)', `import { open } from 'node:fs/promises';\nawait open(p, 'w');`, ['open']],
+    ['open(wx)', `import { promises } from 'node:fs';\nawait promises.open(p, 'wx', 0o600);`, ['open']],
+    ['open(O_WRONLY)', `import { open, constants } from 'node:fs/promises';\nawait open(p, constants.O_WRONLY);`, ['open']],
+    ['open(変数のフラグ)', `import { open } from 'node:fs/promises';\nawait open(p, flags);`, ['open']],
+    ['getBuiltinModule 経由', `const fs = process.getBuiltinModule('node:fs');\nfs.unlinkSync(p);`, ['unlinkSync']],
+  ])('S2-8: 検出関数は %s を見つける', (_label, code, apis) => {
+    expect(findFsWrites('sample.ts', code).map((f) => f.api)).toEqual(apis);
+  });
+
+  it.each([
+    ['読み取りだけ', `import { readFile, stat } from 'node:fs/promises';\nawait readFile(p);`],
+    ['open(O_RDONLY)', `import { open, constants } from 'node:fs/promises';\nawait open(p, constants.O_RDONLY | constants.O_NOFOLLOW);`],
+    ['open(r)', `import { open } from 'node:fs/promises';\nawait open(p, 'r');`],
+    ['fs を読み込まないファイルの同名の識別子', `const mkdir = (p: string) => p;\nmkdir('x');\nconst rename = 1;`],
+  ])('S2-8: 検出関数は %s には反応しない', (_label, code) => {
+    expect(findFsWrites('sample.ts', code)).toEqual([]);
+  });
+});

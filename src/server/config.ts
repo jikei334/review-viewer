@@ -12,7 +12,7 @@
 export interface ServerConfig {
   /** 対象リポジトリのディレクトリ(読み取り専用として扱う) */
   readonly repoDir: string;
-  /** コメントの保存先のディレクトリ */
+  /** コメントの保存先のディレクトリ(起動時に data-dir.ts が決める。環境変数から直接は決まらない) */
   readonly dataDir: string;
   /** bind アドレス */
   readonly host: string;
@@ -24,13 +24,19 @@ export interface ServerConfig {
   readonly allowedOrigins: readonly string[];
 }
 
+/**
+ * 環境変数だけから決まる設定
+ *
+ * 保存先(`dataDir`)は含まない。`DATA_DIR`・`/data`・一時ディレクトリを含む決め方は
+ * data-dir.ts にあり、対象リポジトリを決めた後に起動の入口で足す。
+ */
+export type LoadedConfig = Omit<ServerConfig, 'dataDir'>;
+
 /** 環境変数の入れ物(`process.env` と同じ形) */
 export type EnvSource = Readonly<Record<string, string | undefined>>;
 
 /** `REPO_DIR` の既定値 */
 export const DEFAULT_REPO_DIR = '/repo';
-/** `DATA_DIR` の既定値 */
-export const DEFAULT_DATA_DIR = '/data';
 /** `HOST` の既定値。`0.0.0.0` を既定にしない(C-3) */
 export const DEFAULT_HOST = '127.0.0.1';
 /** `PORT` の既定値 */
@@ -99,10 +105,10 @@ export function parseAllowList(value: string): string[] {
  * 環境変数からサーバーの設定を組み立てる(SPEC §2.5)
  *
  * @param env 環境変数(`process.env` を渡す)
- * @returns サーバーの設定。未設定の項目は SPEC §2.5 の既定値
+ * @returns 環境変数から決まる設定(保存先を除く)。未設定の項目は SPEC §2.5 の既定値
  * @throws ConfigError 値が不正なとき
  */
-export function loadConfig(env: EnvSource): ServerConfig {
+export function loadConfig(env: EnvSource): LoadedConfig {
   const port = parsePort(readEnv(env, 'PORT'));
 
   const allowedHosts = parseAllowList(
@@ -122,7 +128,6 @@ export function loadConfig(env: EnvSource): ServerConfig {
 
   return {
     repoDir: readEnv(env, 'REPO_DIR') ?? DEFAULT_REPO_DIR,
-    dataDir: readEnv(env, 'DATA_DIR') ?? DEFAULT_DATA_DIR,
     host: readEnv(env, 'HOST') ?? DEFAULT_HOST,
     port,
     allowedHosts,
