@@ -506,8 +506,9 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
       signalGroup(child, 'SIGKILL');
       await exitedPromise;
       // ポートが閉じるまで待つ(次の起動で bind できるように)
-      await waitUntil(async () => !(await canConnect('127.0.0.1', port, 500)), 5_000, 50);
+      const closed = await waitUntil(async () => !(await canConnect('127.0.0.1', port, 500)), 5_000, 50);
       runningProcesses.delete(child);
+      if (!closed) throw new Error('SIGKILL の後も、ポートが閉じませんでした');
     },
     start: async () => {
       current = await launchChild();

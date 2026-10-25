@@ -16,7 +16,7 @@
  * 追加時間の目安(上限): S2-2 約 5 秒、S2-3 約 25 秒(上限 60 秒)、C-6 約 10 秒。ループ回数は下の定数で固定。
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { commentsOf, getComments, jsonOf, patchComment, postComment, postReply, type JsonObject } from './helpers/comments.js';
@@ -98,6 +98,8 @@ async function seed(server: TestServer): Promise<void> {
 interface Writers {
   /** 201 を受け取った書き込み(本文 → ID) */
   acked: Map<string, string>;
+  /** 201 以外の応答を受け取った書き込みのステータス */
+  others: number[];
   /** 書き込みを止めるよう合図する */
   stop: () => void;
   /** 全ワーカーが終わるのを待つ */
@@ -114,6 +116,7 @@ interface Writers {
  */
 function startWriters(server: TestServer, tag: string, count: number): Writers {
   const acked = new Map<string, string>();
+  const others: number[] = [];
   let stopped = false;
   const worker = async (w: number): Promise<void> => {
     for (let seq = 0; !stopped; seq++) {
@@ -123,7 +126,10 @@ function startWriters(server: TestServer, tag: string, count: number): Writers {
           server,
           { path: EXAMPLE, startLine: 1, endLine: 1, body, type: 'note' }
         );
-        if (res.status !== 201) return;
+        if (res.status !== 201) {
+          others.push(res.status);
+          return;
+        }
         acked.set(body, String(jsonOf(res).id));
       } catch {
         // 落とされた・閉じられたことによる接続エラーは、このテストでは想定内。ワーカーを終える
@@ -132,7 +138,7 @@ function startWriters(server: TestServer, tag: string, count: number): Writers {
     }
   };
   const done = Promise.all(Array.from({ length: count }, (_, w) => worker(w))).then(() => undefined);
-  return { acked, stop: () => { stopped = true; }, done };
+  return { acked, others, stop: () => { stopped = true; }, done };
 }
 
 /**
@@ -150,6 +156,27 @@ async function expectAllAckedPresent(server: TestServer, acked: Map<string, stri
     expect(byBody.get(body), '応答の ID と、取得した ID が違う').toBe(id);
   }
   expect(new Set(all.map((c) => c.id)).size, 'ID が重複している').toBe(all.length);
+  // 中途半端なデータが無い: 取得できる各コメントが、SPEC §2.2 の項目をそろえた完全な形
+  for (const c of all) {
+    const complete =
+      typeof c.id === 'string' && typeof c.path === 'string' && typeof c.body === 'string' &&
+      typeof c.status === 'string' && typeof c.type === 'string' && typeof c.author === 'string' &&
+      Array.isArray(c.replies) && c.anchor !== null && typeof c.anchor === 'object' &&
+      typeof c.createdAt === 'string' && typeof c.updatedAt === 'string';
+    expect(complete, `不完全なコメントがある: ${JSON.stringify(c).slice(0, 200)}`).toBe(true);
+  }
+}
+
+/**
+ * 保存先に comments.json 以外のファイル(一時ファイル)が残っていないことを確かめる
+ * (SPEC §2.1: 保存先には comments.json だけが置かれる前提。他に作るファイルは SPEC に無い)
+ * @param server 対象サーバー
+ * @param context 失敗時に添える状況
+ * @returns なし
+ */
+async function expectNoLeftoverFiles(server: TestServer, context: string): Promise<void> {
+  const names = (await readdir(server.dataDir)).filter((n) => n !== 'comments.json');
+  expect(names, `${context}: 保存先に comments.json 以外が残っている`).toEqual([]);
 }
 
 // ─── S2-2: 並行リクエスト ────────────────────────────────────────────────────
@@ -273,8 +300,12 @@ describe.skipIf(process.platform !== 'linux')('S2-3: SIGKILL during writes keeps
         await expectCommentsFileIsValidJson(server);
 
         await server.start();
-        await expectCommentsFileIsValidJson(server);
-        await expectAllAckedPresent(server, acked);
+        try {
+          await expectCommentsFileIsValidJson(server);
+          await expectAllAckedPresent(server, acked);
+        } catch (err) {
+          throw new Error(`S2-3 ラウンド ${round} で失敗: ${String(err)}`, { cause: err });
+        }
 
         // 再起動後も書き込める
         await create(server, `after-crash-${round}`);
@@ -284,6 +315,32 @@ describe.skipIf(process.platform !== 'linux')('S2-3: SIGKILL during writes keeps
       expect(acked.size, '成功を返した書き込みが 1 件も無い').toBeGreaterThan(0);
     },
     90_000
+  );
+});
+
+describe.skipIf(process.platform !== 'linux')('S2-3: temporary files after SIGKILL', () => {
+  it(
+    'S2-3: SIGKILL → 再起動(待ち受け開始)の時点で、保存先に comments.json 以外のファイルが残っていない(3 回)',
+    async () => {
+      const server = await startTestServer({ token: DUMMY_TOKEN });
+      try {
+        await seed(server);
+        for (let round = 0; round < 3; round++) {
+          const writers = startWriters(server, `tmp${round}`, WRITERS);
+          expect(await waitUntil(async () => writers.acked.size >= 3, 10_000, 10)).toBe(true);
+          await new Promise<void>((r) => setTimeout(r, 5 + round * 20));
+          await server.crash();
+          writers.stop();
+          await writers.done;
+          // 落ちた直後に一時ファイルが残っているかは確率的なので、断定しない。再起動後だけを見る(SPEC §2.1)
+          await server.start();
+          await expectNoLeftoverFiles(server, `S2-3 ラウンド ${round}`);
+        }
+      } finally {
+        await server.stop();
+      }
+    },
+    60_000
   );
 });
 
@@ -314,8 +371,12 @@ describe.skipIf(process.platform !== 'linux')('C-6: SIGTERM / SIGINT during writ
         expect(result.elapsedMs, `${signal} から終了までに ${result.elapsedMs}ms かかった`).toBeLessThanOrEqual(5_000);
         expect(result.exitCode, `終了コードが 0 ではない。出力:\n${server.logs().slice(-1500)}`).toBe(0);
 
+        // 終了処理中に届いた書き込みは 503 で断る(接続を受け付けない場合は、接続エラーでワーカーが終わる)
+        expect(writers.others.filter((st) => st !== 503), '終了処理中の書き込みに 503 以外の応答があった').toEqual([]);
+
         // 止まった直後の状態
         await expectCommentsFileIsValidJson(server);
+        await expectNoLeftoverFiles(server, `${signal} による終了のあと`);
 
         // 起動し直して、成功を返した分がすべて残っていること
         await server.start();
@@ -332,4 +393,10 @@ describe.skipIf(process.platform !== 'linux')('C-6: SIGTERM / SIGINT during writ
     },
     60_000
   );
+});
+
+// ─── 一時ファイルの掃除(ダミーを使う検証は SPEC に名前が無いので保留) ──────────
+
+describe('S2-3: stale temporary files', () => {
+  it.todo('S2-3: 保存先に置いた一時ファイルらしきダミーが、起動時に掃除される(一時ファイルの名前が SPEC に無いため、人間の判断待ち)');
 });
