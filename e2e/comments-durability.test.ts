@@ -395,8 +395,5 @@ describe.skipIf(process.platform !== 'linux')('C-6: SIGTERM / SIGINT during writ
   );
 });
 
-// ─── 一時ファイルの掃除(ダミーを使う検証は SPEC に名前が無いので保留) ──────────
-
-describe('S2-3: stale temporary files', () => {
-  it.todo('S2-3: 保存先に置いた一時ファイルらしきダミーが、起動時に掃除される(一時ファイルの名前が SPEC に無いため、人間の判断待ち)');
-});
+// 一時ファイルの名前は SPEC に無いので、ダミーを置く検証はしない。
+// SIGKILL 後の掃除は、上の「comments.json 以外が残っていない」で確かめる(S2-3)。
