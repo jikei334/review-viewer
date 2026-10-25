@@ -4,8 +4,7 @@
  *           C-2・C-5(PATCH と返信 POST への回帰)
  *
  * SPEC §2.1、§2.2「コメント API の形」(PATCH、replies、エラー)、§5 だけを根拠とする。src/ は読まない。
- * SPEC が決めていない点(resolved → wontfix のときの resolution の扱い、open と同時に resolution を送ったとき、
- * resolution が null のとき、PATCH での updatedAt の変化など)は断定しない。
+ * SPEC §2.1(updatedAt)、§2.2(PATCH の resolution、404 の優先)の決定に沿って断定する。
  */
 
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -166,6 +165,90 @@ describe('S2-7: ステータスの遷移', () => {
     expect([rb?.status, rb?.resolution]).toEqual(['wontfix', '再起動前に見送り']);
   });
 
+  it('S2-7: resolved / wontfix で resolution を省略すると null になる(前の値は残らない)', async () => {
+    const c = await create();
+    const id = c.id as string;
+    expect((await patchComment(server, id, { status: 'resolved', resolution: '前の説明' })).status).toBe(200);
+    // resolved → wontfix(省略)
+    let res = await patchComment(server, id, { status: 'wontfix' });
+    expect(res.status, res.text).toBe(200);
+    expect(jsonOf(res).resolution).toBeNull();
+    // 説明つきにしてから、同じ値(resolved → resolved)で省略
+    expect((await patchComment(server, id, { status: 'resolved', resolution: '別の説明' })).status).toBe(200);
+    res = await patchComment(server, id, { status: 'resolved' });
+    expect(res.status, res.text).toBe(200);
+    expect(jsonOf(res).resolution).toBeNull();
+    expect((await fetchOne(id))?.resolution).toBeNull();
+  });
+
+  it('S2-7: resolved / wontfix で resolution を送ると、送った内容で置き換わる', async () => {
+    const c = await create();
+    const id = c.id as string;
+    expect((await patchComment(server, id, { status: 'resolved', resolution: '一つ目' })).status).toBe(200);
+    const res = await patchComment(server, id, { status: 'resolved', resolution: '二つ目' });
+    expect(res.status, res.text).toBe(200);
+    expect(jsonOf(res).resolution).toBe('二つ目');
+  });
+
+  it('S2-7: resolved / wontfix で resolution: null を明示すると受け付けられ、null になる', async () => {
+    for (const status of ['resolved', 'wontfix']) {
+      const c = await create();
+      const id = c.id as string;
+      expect((await patchComment(server, id, { status: 'resolved', resolution: '前の説明' })).status).toBe(200);
+      const res = await patchComment(server, id, { status, resolution: null });
+      expect(res.status, res.text).toBe(200);
+      expect(jsonOf(res).status).toBe(status);
+      expect(jsonOf(res).resolution).toBeNull();
+    }
+  });
+
+  it('S2-7: PATCH の成功のたびに updatedAt が進む(同じ値への変更も含む。createdAt は変わらない)', async () => {
+    const c = await create();
+    const id = c.id as string;
+    let prev = Date.parse(c.updatedAt);
+    const steps: Array<Record<string, unknown>> = [
+      { status: 'resolved', resolution: 'x' },
+      { status: 'resolved', resolution: 'x' }, // 同じ値
+      { status: 'open' },
+      { status: 'open' }, // 同じ値
+      { status: 'wontfix' },
+    ];
+    for (const step of steps) {
+      await pause(30);
+      const res = await patchComment(server, id, step);
+      expect(res.status, res.text).toBe(200);
+      const j = jsonOf(res);
+      expect(String(j.updatedAt)).toMatch(ISO);
+      expect(Date.parse(j.updatedAt), JSON.stringify(step)).toBeGreaterThan(prev);
+      expect(j.createdAt).toBe(c.createdAt);
+      prev = Date.parse(j.updatedAt);
+    }
+    expect(Date.parse((await fetchOne(id))?.updatedAt)).toBe(prev);
+  });
+
+  it('S2-7: 拒否された PATCH では updatedAt が進まない', async () => {
+    const c = await create();
+    await pause(30);
+    const res = await patchComment(server, c.id as string, { status: 'done' });
+    expect(res.status).toBe(400);
+    expect((await fetchOne(c.id as string))?.updatedAt).toBe(c.updatedAt);
+  });
+
+  it('S2-7: 存在しない id へのリクエストは、内容に誤りがあっても 404(400 より優先)', async () => {
+    const before = await dumpAll();
+    const badPatches: unknown[] = [{ status: 'done' }, {}, { status: 'open', body: 'x' }, '{not json', [], { status: 'open', resolution: 'x' }];
+    for (const p of badPatches) {
+      const res = await patchComment(server, 'no-such-id', p);
+      expect(res.status, `PATCH ${JSON.stringify(p)}: ${res.text}`).toBe(404);
+    }
+    const badReplies: unknown[] = [{ body: '' }, {}, { body: 'x', author: 'ai' }, { body: 'a'.repeat(40_000) }, '{not json', { body: 1 }];
+    for (const p of badReplies) {
+      const res = await postReply(server, 'no-such-id', p);
+      expect(res.status, `reply ${JSON.stringify(p).slice(0, 60)}: ${res.text.slice(0, 100)}`).toBe(404);
+    }
+    expect(await dumpAll()).toBe(before);
+  });
+
   describe('不正な入力は 400 で、状態は変わらない', () => {
     const bad: Array<[label: string, payload: unknown]> = [
       ['status が 3 つ以外の値(done)', { status: 'done' }],
@@ -189,6 +272,7 @@ describe('S2-7: ステータスの遷移', () => {
       ['replies を含む', { status: 'resolved', replies: [] }],
       ['id を含む', { status: 'resolved', id: 'other' }],
       ['未知のフィールド', { status: 'resolved', extra: 1 }],
+      ['open と一緒に resolution を送る', { status: 'open', resolution: '理由' }],
       ['resolution が文字列でない(数値)', { status: 'resolved', resolution: 123 }],
       ['resolution が文字列でない(オブジェクト)', { status: 'wontfix', resolution: { a: 1 } }],
       ['JSON でない', '{not json'],
@@ -263,7 +347,7 @@ describe('S2-7: 返信', () => {
     expect(listed?.replies.every((r: JsonObject) => r.author === 'human')).toBe(true);
   });
 
-  it('S2-7: 返信を追加すると、コメントの updatedAt が更新される(createdAt は変わらない)', async () => {
+  it('S2-7: 返信を追加するたびに、コメントの updatedAt が進む(createdAt は変わらない)', async () => {
     const c = await create();
     await pause(30);
     const res = await postReply(server, c.id as string, { body: '更新時刻を進める' });
