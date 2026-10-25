@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ServerConfig } from './config.js';
 import {
   closeServer,
+  closeResources,
   createShutdownHandler,
   describeError,
   registerShutdownSignals,
@@ -330,5 +331,34 @@ describe('T1-1: describeError', () => {
 
   it('T1-1: Error 以外は文字列にする', () => {
     expect(describeError('oops')).toBe('oops');
+  });
+});
+
+describe('S2-2 / C-6: closeResources', () => {
+  it('S2-2: 受け付けを止めてからサーバーを閉じ、書き込みの完了を待ってから解決する', async () => {
+    const { server } = await start();
+    const order: string[] = [];
+    let finish: () => void = () => undefined;
+    const store = {
+      beginShutdown: () => order.push('begin'),
+      drain: () =>
+        new Promise<void>((r) => {
+          order.push('drain');
+          finish = r;
+        }),
+    };
+    let done = false;
+    const closing = closeResources({ server, store }, 0).then(() => {
+      done = true;
+    });
+    await vi.waitFor(() => expect(order).toEqual(['begin', 'drain']));
+    expect(done).toBe(false);
+    finish();
+    await closing;
+    expect(done).toBe(true);
+  });
+
+  it('C-6: サーバーもストアも無い(起動前)なら、何もせず解決する', async () => {
+    await expect(closeResources({})).resolves.toBeUndefined();
   });
 });

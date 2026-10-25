@@ -13,6 +13,7 @@ import {
   realStoreFs,
   ReviewStore,
   ReviewStoreError,
+  StoreClosingError,
   type NewComment,
   type StoreFs,
 } from './ReviewStore.js';
@@ -381,5 +382,101 @@ describe('T2-6: updateStatus / addReply / nextTimestamp(S2-7、S2-8)', () => {
     const reloaded = makeStore();
     await reloaded.load();
     expect(reloaded.list()).toEqual(store.list());
+  });
+});
+
+describe('S2-2 / S2-3 / C-6: 書き込みの完了待ちと終了処理', () => {
+  it('S2-3: rename の失敗で、既存の comments.json は無傷で、一時ファイルも残らない', async () => {
+    const store = makeStore();
+    await store.load();
+    await store.add(SAMPLE);
+    const before = readFileSync(join(dir, COMMENTS_FILE), 'utf8');
+    const failing = makeStore({
+      fs: { ...realStoreFs, rename: () => Promise.reject(Object.assign(new Error('x'), { code: 'EIO' })) },
+    });
+    await failing.load();
+    await expect(failing.add(SAMPLE)).rejects.toThrow(ReviewStoreError);
+    expect(readFileSync(join(dir, COMMENTS_FILE), 'utf8')).toBe(before);
+    expect(files()).toEqual([COMMENTS_FILE]);
+  });
+
+  it('S2-3: 書き込みの途中(fsync 前)の失敗でも、既存のファイルは無傷で、メモリも変わらない', async () => {
+    const store = makeStore();
+    await store.load();
+    await store.add(SAMPLE);
+    const before = readFileSync(join(dir, COMMENTS_FILE), 'utf8');
+    const failing = makeStore({
+      fs: {
+        ...realStoreFs,
+        async writeFileSynced(path, data) {
+          await realStoreFs.writeFileSynced(path, data.slice(0, 10));
+          throw Object.assign(new Error('x'), { code: 'ENOSPC' });
+        },
+      },
+    });
+    await failing.load();
+    await expect(failing.add(SAMPLE)).rejects.toThrow(ReviewStoreError);
+    expect(readFileSync(join(dir, COMMENTS_FILE), 'utf8')).toBe(before);
+    expect(files()).toEqual([COMMENTS_FILE]);
+    expect(failing.list()).toHaveLength(1);
+  });
+
+  it('S2-2: drain() は、受け付け済みの書き込みがすべて保存されてから解決する', async () => {
+    const store = makeStore();
+    await store.load();
+    const pending = [store.add(SAMPLE), store.add(SAMPLE), store.add(SAMPLE)];
+    await store.drain();
+    expect(parseStoreFile(readFileSync(join(dir, COMMENTS_FILE), 'utf8'))).toHaveLength(3);
+    await Promise.all(pending);
+  });
+
+  it('S2-2: 終了処理を始めると、新しい書き込みは StoreClosingError で断り、何も書かない', async () => {
+    const store = makeStore();
+    await store.load();
+    const created = await store.add(SAMPLE);
+    store.beginShutdown();
+    expect(() => store.add(SAMPLE)).toThrow(StoreClosingError);
+    expect(() => store.updateStatus(created.id, { status: 'resolved', resolution: null })).toThrow(StoreClosingError);
+    expect(() => store.addReply(created.id, { author: 'human', body: 'x' })).toThrow(StoreClosingError);
+    expect(store.list()).toHaveLength(1);
+    expect(parseStoreFile(readFileSync(join(dir, COMMENTS_FILE), 'utf8'))).toHaveLength(1);
+  });
+
+  it('S2-2: 終了処理を始める前に受け付けた書き込みは、断られず保存される', async () => {
+    const store = makeStore();
+    await store.load();
+    const accepted = store.add(SAMPLE);
+    store.beginShutdown();
+    await store.drain();
+    await expect(accepted).resolves.toMatchObject({ id: 'id-1' });
+    expect(parseStoreFile(readFileSync(join(dir, COMMENTS_FILE), 'utf8'))).toHaveLength(1);
+    expect(files()).toEqual([COMMENTS_FILE]);
+  });
+
+  it('S2-3: 起動時の掃除は、自分の一時ファイルの形だけを消し、comments.json と他のファイルは消さない', async () => {
+    const keep = ['other.txt', 'comments.json.bak', 'comments.json.tmp', 'comments.json.1.tmp', 'x.comments.json.1.2.tmp'];
+    writeFileSync(join(dir, COMMENTS_FILE), JSON.stringify({ version: 1, comments: [] }));
+    for (const name of keep) writeFileSync(join(dir, name), 'keep');
+    writeFileSync(join(dir, 'comments.json.123.4.tmp'), 'partial');
+    writeFileSync(join(dir, 'comments.json.99999.1.tmp'), '{"ver');
+    const store = makeStore();
+    await expect(store.cleanupTempFiles()).resolves.toEqual({ removed: 2, failed: 0 });
+    expect(files()).toEqual([COMMENTS_FILE, ...keep].sort());
+    expect(readFileSync(join(dir, COMMENTS_FILE), 'utf8')).toContain('"version":1');
+  });
+
+  it('S2-3: 掃除で1件消せなくても止まらず、失敗の数を返す。一覧できなければ失敗する', async () => {
+    writeFileSync(join(dir, 'comments.json.1.1.tmp'), 'a');
+    writeFileSync(join(dir, 'comments.json.1.2.tmp'), 'b');
+    const partial = makeStore({
+      fs: {
+        ...realStoreFs,
+        unlink: (p) =>
+          p.endsWith('1.1.tmp') ? Promise.reject(Object.assign(new Error('x'), { code: 'EACCES' })) : realStoreFs.unlink(p),
+      },
+    });
+    await expect(partial.cleanupTempFiles()).resolves.toEqual({ removed: 1, failed: 1 });
+    const noList = makeStore({ fs: { ...realStoreFs, listDir: () => Promise.reject(new Error('x')) } });
+    await expect(noList.cleanupTempFiles()).rejects.toThrow(ReviewStoreError);
   });
 });

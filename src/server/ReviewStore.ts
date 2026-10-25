@@ -105,6 +105,12 @@ export interface StoreFs {
    * @returns なし
    */
   unlink(path: string): Promise<void>;
+  /**
+   * ディレクトリ直下のエントリ名を列挙する
+   * @param path ディレクトリのパス
+   * @returns 名前の配列(パスは含まない)
+   */
+  listDir(path: string): Promise<string[]>;
 }
 
 /** 実際のファイルシステムを使う操作 */
@@ -122,7 +128,30 @@ export const realStoreFs: StoreFs = {
   },
   rename: (from, to) => nodeFs.rename(from, to),
   unlink: (path) => nodeFs.unlink(path),
+  listDir: (path) => nodeFs.readdir(path),
 };
+
+/**
+ * このストアが作る一時ファイルの名前の形(`comments.json.<pid>.<連番>.tmp`)
+ * 掃除の対象はこの形に完全一致するものだけ。`comments.json` 本体や、保存先の他のファイルは消さない
+ */
+const TEMP_FILE_PATTERN = /^comments\.json\.\d+\.\d+\.tmp$/;
+
+/** 終了処理中に書き込みを受け付けないときのエラー(HTTP では 503) */
+export class StoreClosingError extends Error {
+  constructor() {
+    super('終了処理中のため、書き込みを受け付けられません');
+    this.name = 'StoreClosingError';
+  }
+}
+
+/** 起動時の掃除の結果 */
+export interface TempCleanupResult {
+  /** 消した一時ファイルの数 */
+  readonly removed: number;
+  /** 消せなかった一時ファイルの数 */
+  readonly failed: number;
+}
 
 /** ストアの失敗(保存ファイルが壊れている、書き込めないなど)。メッセージにコメントの中身を含めない */
 export class ReviewStoreError extends Error {
@@ -263,6 +292,8 @@ export class ReviewStore {
   /** メモリ上のコメント(作成順)。書き込みに成功してから更新する */
   private comments: StoredComment[] = [];
   private loaded = false;
+  /** 終了処理が始まったら true。以後の書き込みは受け付けない */
+  private closing = false;
   /** 直列化のための、末尾の処理 */
   private tail: Promise<unknown> = Promise.resolve();
   /** 一時ファイル名の重複を避ける連番 */
@@ -326,6 +357,7 @@ export class ReviewStore {
    * @throws ReviewStoreError 保存できなかったとき
    */
   add(input: NewComment): Promise<StoredComment> {
+    this.assertAccepting();
     return this.enqueue(async () => {
       this.assertLoaded();
       const at = this.now().toISOString();
@@ -401,6 +433,7 @@ export class ReviewStore {
    * @throws ReviewStoreError 保存できなかったとき
    */
   private mutate(id: string, build: (current: StoredComment, at: string) => StoredComment): Promise<StoredComment> {
+    this.assertAccepting();
     return this.enqueue(async () => {
       this.assertLoaded();
       const index = this.comments.findIndex((c) => c.id === id);
@@ -412,6 +445,59 @@ export class ReviewStore {
       this.comments = next;
       return structuredClone(updated);
     });
+  }
+
+  /**
+   * 終了処理を始める。以後の書き込み(add / updateStatus / addReply)は StoreClosingError で断る
+   *
+   * すでに受け付けた書き込みは断らず、drain() で完了を待てる。何度呼んでもよい。
+   *
+   * @returns なし
+   */
+  beginShutdown(): void {
+    this.closing = true;
+  }
+
+  /**
+   * 書き込みを受け付けられる状態か確かめる(同期的に確かめる: 受け付けたものだけがキューに入る)
+   *
+   * @returns なし
+   * @throws StoreClosingError 終了処理中のとき
+   */
+  private assertAccepting(): void {
+    if (this.closing) throw new StoreClosingError();
+  }
+
+  /**
+   * 前回の落ち方(SIGKILL など)で残った一時ファイルを消す(起動時、待ち受けの前に呼ぶ)
+   *
+   * 消すのは `comments.json.<数字>.<数字>.tmp` の形に完全一致する名前だけ。`comments.json` と
+   * 他のファイルは消さない。1件の削除失敗では止めない(残った一時ファイルは害がなく、次回また掃除される)が、
+   * 失敗の数を返すので、呼び出し側がログに出す。
+   *
+   * @returns 消した数と消せなかった数
+   * @throws ReviewStoreError 保存先を一覧できないとき(load も同じ理由で失敗するので、起動を止める)
+   */
+  async cleanupTempFiles(): Promise<TempCleanupResult> {
+    let names: string[];
+    try {
+      names = await this.fs.listDir(this.dataDir);
+    } catch (err: unknown) {
+      throw new ReviewStoreError('保存先の一時ファイルを調べられません', { cause: err });
+    }
+    let removed = 0;
+    let failed = 0;
+    for (const name of names) {
+      if (!TEMP_FILE_PATTERN.test(name)) continue;
+      try {
+        await this.fs.unlink(join(this.dataDir, name));
+        removed += 1;
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        failed += 1;
+      }
+    }
+    return { removed, failed };
   }
 
   /**
@@ -471,7 +557,7 @@ export class ReviewStore {
    * 一時ファイルを消す。無ければ何もしない
    *
    * 消せなかったときも、元の失敗を隠さないよう投げない(元のエラーを呼び出し元へ伝える)。
-   * 残った一時ファイルは、起動時の掃除(別タスク)で消す。
+   * 残った一時ファイルは、次回の起動時の掃除(cleanupTempFiles)で消す。
    *
    * @param tempPath 一時ファイルのパス
    * @returns なし

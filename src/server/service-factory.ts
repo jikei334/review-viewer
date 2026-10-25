@@ -19,13 +19,20 @@ export interface OpenedService {
  * ReviewService を、読み込み済みの ReviewStore つきで作る
  *
  * @param config 対象リポジトリと保存先
+ * @param log ログの出力先(省略時は標準エラー)
  * @returns 業務ロジックとストア
- * @throws ReviewStoreError 保存ファイルが壊れている、または読めないとき
+ * @throws ReviewStoreError 保存先を調べられない、保存ファイルが壊れている、または読めないとき
  */
 export async function openReviewService(
-  config: Pick<ServerConfig, 'repoDir' | 'dataDir'>
+  config: Pick<ServerConfig, 'repoDir' | 'dataDir'>,
+  log: (message: string) => void = (m) => process.stderr.write(`${m}\n`)
 ): Promise<OpenedService> {
   const store = new ReviewStore({ dataDir: config.dataDir });
+  // 前回の異常終了で残った一時ファイルを、読み込みの前に掃除する。個別の削除失敗は起動を止めない
+  // (害のない残骸で、次回また掃除される)が、黙らずにログに出す
+  const cleanup = await store.cleanupTempFiles();
+  if (cleanup.removed > 0) log(`Review Viewer: 前回の一時ファイルを ${cleanup.removed} 件消しました`);
+  if (cleanup.failed > 0) log(`Review Viewer: 一時ファイルを ${cleanup.failed} 件消せませんでした`);
   await store.load();
   const service = new ReviewService({ repoReader: new RepoReader({ repoDir: config.repoDir }), store });
   return { service, store };
