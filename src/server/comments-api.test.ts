@@ -244,3 +244,108 @@ describe('S2-1: 保存の失敗', () => {
     expect(logLines.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * PATCH / 返信 のリクエストを送る
+ *
+ * @param path パス(/api/comments/ 以降)
+ * @param method メソッド
+ * @param payload JSON(文字列ならそのまま本文)
+ * @param headers 追加のヘッダ
+ * @returns 応答
+ */
+function send(path: string, method: string, payload: unknown, headers: Record<string, string> = {}): Promise<Response> {
+  return Promise.resolve(
+    app.request(`http://internal.invalid/api/comments/${path}`, {
+      method,
+      headers: { Host: HOST, 'Content-Type': 'application/json', ...headers },
+      body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+    })
+  );
+}
+
+/**
+ * コメントを1件作って ID を返す
+ *
+ * @returns コメントの ID
+ */
+async function createOne(): Promise<string> {
+  return ((await (await post(valid())).json()) as { id: string }).id;
+}
+
+describe('S2-7: PATCH /api/comments/:id', () => {
+  it('S2-7: 200 と更新後の Comment を返し、一覧にも反映される', async () => {
+    const id = await createOne();
+    const res = await send(id, 'PATCH', { status: 'resolved', resolution: '直した' });
+    expect(res.status).toBe(200);
+    const c = (await res.json()) as Record<string, unknown>;
+    expect(c).toMatchObject({ id, status: 'resolved', resolution: '直した', body: 'メモ' });
+    const list = (await (await get()).json()) as { comments: Record<string, unknown>[] };
+    expect(list.comments[0]).toEqual(c);
+  });
+
+  it.each([
+    ['status が 3 つ以外', { status: 'done' }],
+    ['status なし', {}],
+    ['body を含む', { status: 'open', body: 'x' }],
+    ['open と resolution', { status: 'open', resolution: 'x' }],
+    ['resolution が数値', { status: 'resolved', resolution: 1 }],
+    ['配列', []],
+    ['JSON でない', '{not json'],
+  ])('S2-7: 400(%s)で、保存内容は変わらない', async (_name, payload) => {
+    const id = await createOne();
+    const before = JSON.stringify(await (await get()).json());
+    const res = await send(id, 'PATCH', payload);
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await (await get()).json())).toBe(before);
+  });
+
+  it('S2-7: 存在しない id は、内容に誤りがあっても 404', async () => {
+    for (const p of [{ status: 'done' }, {}, '{not json', { status: 'open', body: 'x' }]) {
+      expect((await send('none', 'PATCH', p)).status).toBe(404);
+    }
+  });
+
+  it('C-2: 許可リスト外の Origin の PATCH は 403 で、変更されない', async () => {
+    const id = await createOne();
+    const res = await send(id, 'PATCH', { status: 'resolved' }, { Origin: 'http://evil.example' });
+    expect(res.status).toBe(403);
+    expect(((await (await get()).json()) as { comments: { status: string }[] }).comments[0]?.status).toBe('open');
+  });
+});
+
+describe('S2-8: POST /api/comments/:id/replies', () => {
+  it('S2-8: 201 と更新後の Comment を返す(author=human 固定)', async () => {
+    const id = await createOne();
+    const res = await send(`${id}/replies`, 'POST', { body: '返信' });
+    expect(res.status).toBe(201);
+    const c = (await res.json()) as { replies: { author: string; body: string }[] };
+    expect(c.replies).toMatchObject([{ author: 'human', body: '返信' }]);
+  });
+
+  it.each([
+    ['author を含む', { body: 'x', author: 'ai' }],
+    ['空の本文', { body: '' }],
+    ['本文なし', {}],
+    ['32 KiB 超', { body: 'a'.repeat(40_000) }],
+  ])('S2-8: 400(%s)で、返信は増えない', async (_name, payload) => {
+    const id = await createOne();
+    expect((await send(`${id}/replies`, 'POST', payload)).status).toBe(400);
+    expect(((await (await get()).json()) as { comments: { replies: unknown[] }[] }).comments[0]?.replies).toEqual([]);
+  });
+
+  it('S2-8: 存在しない id は、内容に誤りがあっても 404', async () => {
+    for (const p of [{ body: '' }, {}, { body: 'x', author: 'ai' }, '{not json']) {
+      expect((await send('none/replies', 'POST', p)).status).toBe(404);
+    }
+  });
+
+  it('C-5: 404・400 の応答とログに本文を含めない', async () => {
+    const id = await createOne();
+    const res = await send(`${id}/replies`, 'POST', { body: SECRET, author: 'ai' });
+    expect(await res.text()).not.toContain(SECRET);
+    const res2 = await send('none/replies', 'POST', { body: SECRET });
+    expect(await res2.text()).not.toContain(SECRET);
+    expect(logLines.join('\n')).not.toContain(SECRET);
+  });
+});

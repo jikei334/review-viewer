@@ -19,6 +19,8 @@ const unusedStore = {
     throw new Error('store.list は呼ばれない想定');
   }),
   add: vi.fn(() => Promise.reject(new Error('store.add は呼ばれない想定'))),
+  updateStatus: vi.fn(() => Promise.reject(new Error('store.updateStatus は呼ばれない想定'))),
+  addReply: vi.fn(() => Promise.reject(new Error('store.addReply は呼ばれない想定'))),
 };
 
 /**

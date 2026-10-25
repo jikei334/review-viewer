@@ -56,10 +56,20 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 | `body` | コメント本文(Markdown) |
 | `author` | `"human"` または `"ai"` |
 | `type` | `"note"`(メモ)または `"instruction"`(AI への指示) |
-| `status` | `"open"` / `"resolved"` / `"wontfix"` |
+| `status` | `"open"` / `"resolved"` / `"wontfix"`(意味は下の「ステータスの意味」) |
 | `replies` | `[{ id, author, body, createdAt }]` |
 | `resolution` | 解決時の説明(任意) |
-| `createdAt` / `updatedAt` | 日時 |
+| `createdAt` / `updatedAt` | 日時。`updatedAt` は、ステータスの変更と返信の追加のたびに進む |
+
+**ステータスの意味**
+
+| 値 | 読み | 意味 | 例 |
+|---|---|---|---|
+| `open` | オープン | 未対応。まだ片付いていない。**AI の処理対象になるのは `open` だけ**(§2.4) | 付けたばかりのコメント。人間が再オープンしたコメント |
+| `resolved` | リゾルブド | 対応済み。指摘どおりに直した、または答えた | AI が修正して「関数名を変えました」と返した |
+| `wontfix` | ウォントフィックス(won't fix = 直さない) | 対応しないと決めた。検討は終わっていて、直さない | 「仕様どおりなので変えません」「別の Issue で扱います」 |
+
+`resolved` と `wontfix` は、どちらも「片付いた」状態で、指摘に沿って直したかどうかが違う。`resolution` には、何をしたか(直さない場合は、その理由)を書く。
 
 保存先は、§2.5「保存先の決め方」で決まったディレクトリの `comments.json`。書き込みは一時ファイルへ書いてから rename する(途中で落ちても壊れない)。書き込むのはこのサーバー1プロセスだけで、MCP 経由の書き込みも同じプロセスを通す。
 
@@ -108,17 +118,17 @@ Web API と MCP は、`ReviewService` を呼ぶ薄いアダプタにする。両
 
 **`PATCH /api/comments/:id`**
 
-- リクエスト: `{ status, resolution? }`。`status` は `"open"` / `"resolved"` / `"wontfix"` のどれからどれへも変えられる(同じ値への変更も成功)。値が3つ以外なら 400。`"resolved"` / `"wontfix"` のとき `resolution`(任意の説明)を付けられる。`"open"` にすると `resolution` は `null` になる
-- `body` など、ほかの項目は変更できない(含まれていたら 400)。応答: 200 と更新後の Comment 1件
+- リクエスト: `{ status, resolution? }`。`status` は `"open"` / `"resolved"` / `"wontfix"` のどれからどれへも変えられる(同じ値への変更も成功)。値が3つ以外なら 400。`"resolved"` / `"wontfix"` のとき `resolution`(任意の説明。文字列または `null`)を付けられる。`resolution` は送った内容で置き換わり、省略または `null` なら `null` になる(前の値は残らない)。`"open"` にすると `resolution` は `null` になり、`"open"` と一緒に `resolution` を送ると 400
+- `body` など、ほかの項目は変更できない(含まれていたら 400)。成功すると `updatedAt` が進む(同じ値への変更も含む)。応答: 200 と更新後の Comment 1件
 
 **`POST /api/comments/:id/replies`**
 
-- リクエスト: `{ body }`。`author` は `"human"` に固定(含まれていたら 400)。応答: 201 と更新後の Comment 1件
+- リクエスト: `{ body }`。`author` は `"human"` に固定(含まれていたら 400)。`body` の規則はコメントの本文と同じ(空または空白文字だけ、32 KiB 超は 400)。成功するとコメントの `updatedAt` が進む。応答: 201 と更新後の Comment 1件
 
 **エラー**
 
 - 入力の誤り(JSON でない、必須項目の欠落、型や値の誤り、未知のフィールド、行範囲の誤り、本文が空(空白文字だけのものを含む)または 32 KiB(UTF-8 で 32,768 バイト)超、巨大またはバイナリのファイルへのコメント)は 400
-- 作成時の拒否対象または存在しない `path`、存在しない `id` は 404
+- 作成時の拒否対象または存在しない `path`、存在しない `id` は 404。存在しない `id` へのリクエストは、内容に誤りがあっても 404(400 より優先)
 - 応答に、`path` の実体や拒否の理由を載せない(C-5)
 
 ### 2.3 MCP ツール

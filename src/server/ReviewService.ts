@@ -11,7 +11,8 @@ import { buildQuote, hashContent, splitLines } from './comment-anchor.js';
 import { InputError, type CommentFilter, type CreateCommentInput } from './comment-input.js';
 import { RepoAccessError } from './path-policy.js';
 import type { RepoEntry, RepoEntryType, RepoFile, RepoReader } from './RepoReader.js';
-import type { CommentAuthor, ReviewStore, StoredComment } from './ReviewStore.js';
+import type { ReplyInput, UpdateCommentInput } from './comment-status.js';
+import { CommentNotFoundError, type CommentAuthor, type ReviewStore, type StoredComment } from './ReviewStore.js';
 
 /** API で返すコメント(`position` は後続のタスクで足す) */
 export type Comment = StoredComment;
@@ -52,7 +53,7 @@ export interface ReviewServiceDeps {
   /** ファイルを読む入口 */
   readonly repoReader: Pick<RepoReader, 'listDirectory' | 'readFile'>;
   /** コメントを保存する入口(読み込み済みのもの) */
-  readonly store: Pick<ReviewStore, 'list' | 'add'>;
+  readonly store: Pick<ReviewStore, 'list' | 'add' | 'updateStatus' | 'addReply'>;
 }
 
 /**
@@ -224,5 +225,43 @@ export class ReviewService {
           (filter.type === undefined || c.type === filter.type)
       )
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+  }
+
+  /**
+   * コメントが存在することを確かめる(存在しない id は、入力の誤りより先に 404 にするため)
+   *
+   * @param id コメントの ID
+   * @returns なし
+   * @throws CommentNotFoundError 該当の ID が無いとき
+   */
+  assertCommentExists(id: string): void {
+    if (!this.store.list().some((c) => c.id === id)) throw new CommentNotFoundError();
+  }
+
+  /**
+   * コメントのステータスと resolution を変更する(S2-7)
+   *
+   * @param id コメントの ID
+   * @param input 検証済みの入力(`parseUpdateCommentInput` の結果)
+   * @returns 更新後のコメント
+   * @throws CommentNotFoundError 該当の ID が無いとき
+   * @throws ReviewStoreError 保存できなかったとき
+   */
+  updateComment(id: string, input: UpdateCommentInput): Promise<Comment> {
+    return this.store.updateStatus(id, input);
+  }
+
+  /**
+   * コメントに返信を追加する(S2-8)
+   *
+   * @param id コメントの ID
+   * @param input 検証済みの入力(`parseReplyInput` の結果)
+   * @param author 返信の作者(Web は human、MCP は ai。呼び出し側が決める)
+   * @returns 更新後のコメント
+   * @throws CommentNotFoundError 該当の ID が無いとき
+   * @throws ReviewStoreError 保存できなかったとき
+   */
+  addReply(id: string, input: ReplyInput, author: CommentAuthor): Promise<Comment> {
+    return this.store.addReply(id, { author, body: input.body });
   }
 }

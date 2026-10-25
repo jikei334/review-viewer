@@ -68,3 +68,47 @@ export function jsonOf(res: HttpResult): JsonObject {
   }
   return parsed.value as JsonObject;
 }
+
+/**
+ * PATCH /api/comments/:id を、JSON の Content-Type で送る(Origin は付けない)
+ *
+ * @param target 接続先
+ * @param id コメントの ID(そのままパスに入れる。エンコード済みであること)
+ * @param payload リクエストの JSON(文字列ならそのまま本文として送る)
+ * @param headers 追加のヘッダ(Content-Type を上書きできる)
+ * @returns 応答
+ */
+export function patchComment(
+  target: HttpTarget,
+  id: string,
+  payload: unknown,
+  headers: Record<string, string> = {}
+): Promise<HttpResult> {
+  return request(target, `/api/comments/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+  });
+}
+
+/**
+ * POST /api/comments/:id/replies を、JSON の Content-Type で送る(Origin は付けない)
+ *
+ * @param target 接続先
+ * @param id コメントの ID(そのままパスに入れる。エンコード済みであること)
+ * @param payload リクエストの JSON(文字列ならそのまま本文として送る)
+ * @param headers 追加のヘッダ(Content-Type を上書きできる)
+ * @returns 応答
+ */
+export function postReply(
+  target: HttpTarget,
+  id: string,
+  payload: unknown,
+  headers: Record<string, string> = {}
+): Promise<HttpResult> {
+  return request(target, `/api/comments/${id}/replies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+  });
+}
