@@ -513,6 +513,5 @@ describe('C-6: Graceful shutdown', () => {
     }
   );
 
-  // 書き込みはステージ2(コメント)で初めて発生するため、ステージ2のテストで検証する
-  it.todo('C-6: 書き込みの途中で SIGTERM / SIGINT を受けても、comments.json が壊れない(ステージ2で検証)');
+  // 書き込みの途中でのシグナルは、書き込みが生じるステージ2の e2e/comments-durability.test.ts で検証している
 });

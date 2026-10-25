@@ -86,6 +86,24 @@ export interface TestServer {
    * @returns 強制終了したかどうかと、終了までの時間
    */
   stop: (signal?: StopSignal, serverOnly?: boolean) => Promise<StopResult>;
+  /**
+   * シグナルを送って終了を待つ。`stop` と違い、一時ディレクトリを削除せず、再起動もしない
+   * (終了後のデータを調べるため)。続けて `start()` で起動し直せる
+   * @param signal 送るシグナル
+   * @param serverOnly `stop` と同じ
+   * @returns 停止の結果
+   */
+  signalAndWait: (signal: StopSignal, serverOnly?: boolean) => Promise<StopResult>;
+  /**
+   * プロセスグループ全体に SIGKILL を送り、終了を待つ(電源断に近い落ち方)。一時ディレクトリは残す
+   * @returns なし
+   */
+  crash: () => Promise<void>;
+  /**
+   * `signalAndWait` / `crash` で止めたサーバーを、同じ設定で起動し直し、GET /healthz が 200 になるまで待つ
+   * @returns なし
+   */
+  start: () => Promise<void>;
 }
 
 /** 起動オプション */
@@ -476,6 +494,23 @@ export async function startTestServer(options: StartOptions = {}): Promise<TestS
       const result = await terminate(current as ChildProcess, 'SIGTERM', false);
       current = await launchChild();
       return result;
+    },
+    signalAndWait: (signal: StopSignal, serverOnly = false) =>
+      terminate(current as ChildProcess, signal, serverOnly),
+    crash: async () => {
+      const child = current as ChildProcess;
+      const exitedPromise = new Promise<void>((r) => {
+        if (child.exitCode !== null || child.signalCode !== null) r();
+        else child.once('exit', () => r());
+      });
+      signalGroup(child, 'SIGKILL');
+      await exitedPromise;
+      // ポートが閉じるまで待つ(次の起動で bind できるように)
+      await waitUntil(async () => !(await canConnect('127.0.0.1', port, 500)), 5_000, 50);
+      runningProcesses.delete(child);
+    },
+    start: async () => {
+      current = await launchChild();
     },
     stop: (signal: StopSignal = 'SIGTERM', serverOnly = false) => {
       stopPromise ??= doStop(signal, serverOnly);
