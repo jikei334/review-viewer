@@ -293,6 +293,9 @@ describe('C-1: API にも Host の検証が掛かる', () => {
         getFile: vi.fn(),
         createComment: vi.fn(),
         listComments: vi.fn(),
+        assertCommentExists: vi.fn(),
+        updateComment: vi.fn(),
+        addReply: vi.fn(),
       };
       const res = await get(url, { host: 'evil.com', deps: { service } });
       expect(res.status).toBe(403);
@@ -323,6 +326,11 @@ describe('C-5: onError は、ログと応答に出す内容を絞る', () => {
       listComments: () => {
         throw err;
       },
+      assertCommentExists: () => {
+        throw err;
+      },
+      updateComment: () => Promise.reject(err),
+      addReply: () => Promise.reject(err),
     };
   }
 

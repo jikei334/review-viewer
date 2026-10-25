@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  CommentNotFoundError,
   COMMENTS_FILE,
+  nextTimestamp,
   parseStoreFile,
   realStoreFs,
   ReviewStore,
@@ -282,5 +284,102 @@ describe('S2-8・C-6: 書き込みの失敗', () => {
     const p = store.add(SAMPLE);
     await expect(store.drain()).resolves.toBeUndefined();
     await expect(p).rejects.toThrow(ReviewStoreError);
+  });
+});
+
+describe('T2-6: updateStatus / addReply / nextTimestamp(S2-7、S2-8)', () => {
+  it('S2-7: updateStatus は status・resolution を置き換え、updatedAt を進めて保存する', async () => {
+    const store = makeStore({ times: ['2026-10-21T00:00:00.000Z', '2026-10-21T00:00:05.000Z'] });
+    await store.load();
+    const c = await store.add(SAMPLE);
+    const u = await store.updateStatus(c.id, { status: 'resolved', resolution: '直した' });
+    expect(u).toMatchObject({ status: 'resolved', resolution: '直した', body: 'メモ', createdAt: c.createdAt });
+    expect(u.updatedAt).toBe('2026-10-21T00:00:05.000Z');
+    const reloaded = makeStore();
+    await reloaded.load();
+    expect(reloaded.list()).toEqual([u]);
+  });
+
+  it('S2-7: 同じ値への変更でも updatedAt が進む', async () => {
+    const store = makeStore({ times: ['2026-10-21T00:00:00.000Z', '2026-10-21T00:00:01.000Z'] });
+    await store.load();
+    const c = await store.add(SAMPLE);
+    const u = await store.updateStatus(c.id, { status: 'open', resolution: null });
+    expect(u.updatedAt > c.updatedAt).toBe(true);
+  });
+
+  it('S2-7: 時計が同じ値・過去を返しても、updatedAt は前の値より厳密に後(+1ms)', async () => {
+    const same = '2026-10-21T00:00:00.000Z';
+    const store = makeStore({ times: [same, same, same, '2026-10-20T00:00:00.000Z'] });
+    await store.load();
+    const c = await store.add(SAMPLE);
+    const u1 = await store.updateStatus(c.id, { status: 'wontfix', resolution: null });
+    expect(u1.updatedAt).toBe('2026-10-21T00:00:00.001Z');
+    const u2 = await store.addReply(c.id, { author: 'human', body: 'x' });
+    expect(u2.updatedAt).toBe('2026-10-21T00:00:00.002Z');
+    expect(nextTimestamp(new Date('2026-10-21T00:00:00.000Z'), '2026-10-21T00:00:00.000Z')).toBe('2026-10-21T00:00:00.001Z');
+    expect(nextTimestamp(new Date('2026-10-21T00:00:09.000Z'), '2026-10-21T00:00:00.000Z')).toBe('2026-10-21T00:00:09.000Z');
+  });
+
+  it('S2-8: addReply は返信を末尾に足し、返信の createdAt とコメントの updatedAt を進める', async () => {
+    const store = makeStore({ times: ['2026-10-21T00:00:00.000Z', '2026-10-21T00:00:02.000Z', '2026-10-21T00:00:03.000Z'] });
+    await store.load();
+    const c = await store.add(SAMPLE);
+    await store.addReply(c.id, { author: 'human', body: '1' });
+    const u = await store.addReply(c.id, { author: 'ai', body: '2' });
+    expect(u.replies.map((r) => [r.author, r.body, r.createdAt])).toEqual([
+      ['human', '1', '2026-10-21T00:00:02.000Z'],
+      ['ai', '2', '2026-10-21T00:00:03.000Z'],
+    ]);
+    expect(new Set(u.replies.map((r) => r.id)).size).toBe(2);
+    expect(u.updatedAt).toBe('2026-10-21T00:00:03.000Z');
+  });
+
+  it('S2-7: 存在しない id は CommentNotFoundError で、何も書かない', async () => {
+    const store = makeStore();
+    await store.load();
+    await store.add(SAMPLE);
+    const before = readFileSync(join(dir, COMMENTS_FILE), 'utf8');
+    await expect(store.updateStatus('none', { status: 'open', resolution: null })).rejects.toBeInstanceOf(CommentNotFoundError);
+    await expect(store.addReply('none', { author: 'human', body: 'x' })).rejects.toBeInstanceOf(CommentNotFoundError);
+    expect(readFileSync(join(dir, COMMENTS_FILE), 'utf8')).toBe(before);
+    expect(files()).toEqual([COMMENTS_FILE]);
+  });
+
+  it('S2-7: 保存に失敗したら、既存ファイルもメモリ上も変わらない(失敗の後は続けて成功できる)', async () => {
+    const store0 = makeStore();
+    await store0.load();
+    const c = await store0.add(SAMPLE);
+    const before = readFileSync(join(dir, COMMENTS_FILE), 'utf8');
+    let fail = true;
+    const flaky: StoreFs = {
+      ...realStoreFs,
+      rename: (a, b) => (fail ? Promise.reject(new Error('boom')) : realStoreFs.rename(a, b)),
+    };
+    const store = makeStore({ fs: flaky });
+    await store.load();
+    await expect(store.updateStatus(c.id, { status: 'resolved', resolution: 'x' })).rejects.toBeInstanceOf(ReviewStoreError);
+    await expect(store.addReply(c.id, { author: 'human', body: 'x' })).rejects.toBeInstanceOf(ReviewStoreError);
+    expect(readFileSync(join(dir, COMMENTS_FILE), 'utf8')).toBe(before);
+    expect(files()).toEqual([COMMENTS_FILE]);
+    expect(store.list()).toEqual([c]);
+    fail = false;
+    expect((await store.updateStatus(c.id, { status: 'resolved', resolution: 'x' })).status).toBe('resolved');
+  });
+
+  it('S2-8: 返信 20 件と状態変更を同時に呼んでも、更新が失われない', async () => {
+    const store = makeStore();
+    await store.load();
+    const c = await store.add(SAMPLE);
+    await Promise.all([
+      ...Array.from({ length: 20 }, (_, i) => store.addReply(c.id, { author: 'human', body: `r${i}` })),
+      store.updateStatus(c.id, { status: 'wontfix', resolution: 'r' }),
+    ]);
+    const [got] = store.list();
+    expect(got?.replies.map((r) => r.body)).toEqual(Array.from({ length: 20 }, (_, i) => `r${i}`));
+    expect(got?.status).toBe('wontfix');
+    const reloaded = makeStore();
+    await reloaded.load();
+    expect(reloaded.list()).toEqual(store.list());
   });
 });

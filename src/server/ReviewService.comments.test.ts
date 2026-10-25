@@ -11,6 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createTempRepo, type TempRepo } from './__fixtures__/temp-repo.js';
 import { hashContent } from './comment-anchor.js';
 import { InputError, type CreateCommentInput } from './comment-input.js';
+import { CommentNotFoundError } from './ReviewStore.js';
 import { RepoAccessError } from './path-policy.js';
 import { RepoReader } from './RepoReader.js';
 import { ReviewService } from './ReviewService.js';
@@ -192,5 +193,39 @@ describe('S2-1・S2-4: listComments', () => {
     await service.createComment(input(), 'human');
     service.listComments().pop();
     expect(service.listComments()).toHaveLength(1);
+  });
+});
+
+describe('T2-6: updateComment / addReply(S2-7、S2-8)', () => {
+  it('S2-7: updateComment は status と resolution を変え、updatedAt を進める(時刻は注入)', async () => {
+    const c = await service.createComment(input(), 'human');
+    const u = await service.updateComment(c.id, { status: 'resolved', resolution: '直した' });
+    expect(u).toMatchObject({ id: c.id, status: 'resolved', resolution: '直した', body: c.body });
+    expect(u.updatedAt > c.updatedAt).toBe(true);
+    expect(service.listComments()[0]).toEqual(u);
+    const again = await service.updateComment(c.id, { status: 'open', resolution: null });
+    expect(again).toMatchObject({ status: 'open', resolution: null });
+    expect(again.updatedAt > u.updatedAt).toBe(true);
+  });
+
+  it('S2-8: addReply は作者を呼び出し側の値にし、コメントの updatedAt を進める', async () => {
+    const c = await service.createComment(input(), 'human');
+    const r1 = await service.addReply(c.id, { body: '返信1' }, 'human');
+    const r2 = await service.addReply(c.id, { body: '返信2' }, 'ai');
+    expect(r2.replies.map((r) => [r.author, r.body])).toEqual([
+      ['human', '返信1'],
+      ['ai', '返信2'],
+    ]);
+    expect(r1.updatedAt > c.updatedAt).toBe(true);
+    expect(r2.updatedAt > r1.updatedAt).toBe(true);
+    expect(r2.replies[0]?.createdAt).toBe(r1.updatedAt);
+  });
+
+  it('S2-7: 存在しない id は CommentNotFoundError(assertCommentExists も)', async () => {
+    await expect(service.updateComment('none', { status: 'open', resolution: null })).rejects.toBeInstanceOf(CommentNotFoundError);
+    await expect(service.addReply('none', { body: 'x' }, 'human')).rejects.toBeInstanceOf(CommentNotFoundError);
+    expect(() => service.assertCommentExists('none')).toThrow(CommentNotFoundError);
+    const c = await service.createComment(input(), 'human');
+    expect(() => service.assertCommentExists(c.id)).not.toThrow();
   });
 });

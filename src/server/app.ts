@@ -9,11 +9,12 @@ import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ServerConfig } from './config.js';
 import { InputError, parseCommentFilter, parseCreateCommentInput } from './comment-input.js';
+import { parseReplyInput, parseUpdateCommentInput } from './comment-status.js';
 import { RepoAccessError, type RepoAccessCode } from './path-policy.js';
 import { RepoReader } from './RepoReader.js';
 import { checkRequest } from './request-guard.js';
 import { ReviewService } from './ReviewService.js';
-import { ReviewStore } from './ReviewStore.js';
+import { CommentNotFoundError, ReviewStore } from './ReviewStore.js';
 import type { StaticAssets } from './static-assets.js';
 
 /** アプリの組み立てに必要な設定(許可リストと、対象リポジトリと、保存先) */
@@ -31,7 +32,7 @@ export interface AppDeps {
    */
   readonly service?: Pick<
     ReviewService,
-    'listReports' | 'listTree' | 'getFile' | 'createComment' | 'listComments'
+    'listReports' | 'listTree' | 'getFile' | 'createComment' | 'listComments' | 'assertCommentExists' | 'updateComment' | 'addReply'
   >;
   /** ログの出力先。省略時は標準エラー */
   readonly log?: AppLogger;
@@ -259,6 +260,21 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Hono {
     return c.json({ comments: service.listComments(filter) });
   });
 
+  // ステータス変更と返信。存在しない id は、内容の誤りより先に 404 にする(SPEC §2.2)。
+  // 人間のコメントの本文を編集・削除する API は無い(PATCH で body が来たら 400)
+  app.patch('/api/comments/:id', async (c) => {
+    const id = c.req.param('id');
+    service.assertCommentExists(id);
+    const input = parseUpdateCommentInput(await readJsonBody(c));
+    return c.json(await service.updateComment(id, input));
+  });
+  app.post('/api/comments/:id/replies', async (c) => {
+    const id = c.req.param('id');
+    service.assertCommentExists(id);
+    const input = parseReplyInput(await readJsonBody(c));
+    return c.json(await service.addReply(id, input, 'human'), 201);
+  });
+
   // 画面の静的ファイル(GET のみ。対応表に無いパスは 404)。API のルートより後に置く
   const assets = deps.assets;
   if (assets !== undefined) {
@@ -278,6 +294,9 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Hono {
       // 応答に載せるのは、固定の分類だけ。指定されたパス、実体のパス、拒否の理由は載せない
       // (秘密ファイルが存在するかどうかを、応答の違いから調べられないようにする)
       return c.json({ error: err.code }, ACCESS_STATUS[err.code]);
+    }
+    if (err instanceof CommentNotFoundError) {
+      return c.json({ error: 'not_found' }, 404);
     }
     if (err instanceof InputError) {
       // メッセージは固定の文字列(受け取った値を含まない)

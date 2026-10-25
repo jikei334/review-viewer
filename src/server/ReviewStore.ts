@@ -231,6 +231,26 @@ export function parseStoreFile(text: string): StoredComment[] {
   return comments;
 }
 
+/** 該当の ID のコメントが無いときのエラー(HTTP では 404) */
+export class CommentNotFoundError extends Error {
+  constructor() {
+    super('コメントが見つかりません');
+    this.name = 'CommentNotFoundError';
+  }
+}
+
+/**
+ * 変更時刻を決める(前の時刻より厳密に後になるようにする)
+ *
+ * @param now 現在時刻
+ * @param previous 前の `updatedAt`(ISO 8601)
+ * @returns ISO 8601(ミリ秒を含む)。`now` が前の時刻以前なら、前の時刻の1ミリ秒後
+ */
+export function nextTimestamp(now: Date, previous: string): string {
+  const prev = Date.parse(previous);
+  return new Date(Math.max(now.getTime(), prev + 1)).toISOString();
+}
+
 /**
  * コメントの保存先への、唯一の書き込み口
  */
@@ -325,6 +345,72 @@ export class ReviewStore {
       await this.persist([...this.comments, comment]);
       this.comments = [...this.comments, comment];
       return structuredClone(comment);
+    });
+  }
+
+  /**
+   * コメントのステータスと resolution を変更して保存する
+   *
+   * 読み取り→変更→書き込みを、キューの1つの区間で行う(並行しても更新が失われない)。
+   * `updatedAt` は、同じ値への変更でも進む。
+   *
+   * @param id コメントの ID
+   * @param change 変更後の status と resolution(検証済み)
+   * @returns 更新後のコメント
+   * @throws CommentNotFoundError 該当の ID が無いとき
+   * @throws ReviewStoreError 保存できなかったとき
+   */
+  updateStatus(id: string, change: Pick<StoredComment, 'status' | 'resolution'>): Promise<StoredComment> {
+    return this.mutate(id, (current, at) => ({
+      ...current,
+      status: change.status,
+      resolution: change.resolution,
+      updatedAt: at,
+    }));
+  }
+
+  /**
+   * コメントに返信を1件追加して保存する
+   *
+   * 返信の ID と日時はここで決める。コメントの `updatedAt` も進む。
+   *
+   * @param id コメントの ID
+   * @param reply 返信の作者と本文(検証済み)
+   * @returns 更新後のコメント
+   * @throws CommentNotFoundError 該当の ID が無いとき
+   * @throws ReviewStoreError 保存できなかったとき
+   */
+  addReply(id: string, reply: Pick<StoredReply, 'author' | 'body'>): Promise<StoredComment> {
+    return this.mutate(id, (current, at) => ({
+      ...current,
+      replies: [...current.replies, { id: this.newId(), author: reply.author, body: reply.body, createdAt: at }],
+      updatedAt: at,
+    }));
+  }
+
+  /**
+   * 1件のコメントを、排他区間の中で読み取り→変更→保存する
+   *
+   * 保存に失敗したら、メモリ上も変えない。変更の時刻は、前の `updatedAt` より厳密に後にする
+   * (時計が同じ値・過去を返しても、1ミリ秒だけ進める)。
+   *
+   * @param id コメントの ID
+   * @param build 現在のコメントと変更時刻から、新しいコメントを作る純粋な関数
+   * @returns 更新後のコメントの複製
+   * @throws CommentNotFoundError 該当の ID が無いとき
+   * @throws ReviewStoreError 保存できなかったとき
+   */
+  private mutate(id: string, build: (current: StoredComment, at: string) => StoredComment): Promise<StoredComment> {
+    return this.enqueue(async () => {
+      this.assertLoaded();
+      const index = this.comments.findIndex((c) => c.id === id);
+      const current = this.comments[index];
+      if (current === undefined) throw new CommentNotFoundError();
+      const updated = build(current, nextTimestamp(this.now(), current.updatedAt));
+      const next = this.comments.map((c, i) => (i === index ? updated : c));
+      await this.persist(next);
+      this.comments = next;
+      return structuredClone(updated);
     });
   }
 
