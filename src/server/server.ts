@@ -82,6 +82,31 @@ export function closeServer(
   });
 }
 
+/** 終了処理で閉じるもの(待ち受けを始める前は、どちらも無い) */
+export interface ClosableResources {
+  /** 待ち受け中のサーバー */
+  readonly server?: Server;
+  /** 書き込みの入口 */
+  readonly store?: { beginShutdown(): void; drain(): Promise<void> };
+}
+
+/**
+ * 終了処理の本体: 書き込みの受け付けを止め、サーバーを閉じ、受け付け済みの書き込みの完了を待つ
+ *
+ * 先に受け付けを止めるので、終了処理中に届いた書き込みは 503 で断られる。受け付け済みのものは
+ * 完了(保存)してから解決する。
+ *
+ * @param resources 閉じるサーバーとストア
+ * @param graceMs 処理中のリクエストの完了を待つ時間(ミリ秒。省略時は既定値)
+ * @returns すべて閉じ終えたら解決する
+ * @throws サーバーを閉じられなかったとき
+ */
+export async function closeResources(resources: ClosableResources, graceMs?: number): Promise<void> {
+  resources.store?.beginShutdown();
+  if (resources.server !== undefined) await closeServer(resources.server, graceMs);
+  if (resources.store !== undefined) await resources.store.drain();
+}
+
 /** シグナルを受けたときの処理に必要なもの */
 export interface ShutdownDeps {
   /** サーバー(と、後のステージでは書き込み中のデータ)を閉じる処理 */

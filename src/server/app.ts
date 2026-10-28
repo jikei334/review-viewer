@@ -14,7 +14,7 @@ import { RepoAccessError, type RepoAccessCode } from './path-policy.js';
 import { RepoReader } from './RepoReader.js';
 import { checkRequest } from './request-guard.js';
 import { ReviewService } from './ReviewService.js';
-import { CommentNotFoundError, ReviewStore } from './ReviewStore.js';
+import { CommentNotFoundError, ReviewStore, StoreClosingError } from './ReviewStore.js';
 import type { StaticAssets } from './static-assets.js';
 
 /** アプリの組み立てに必要な設定(許可リストと、対象リポジトリと、保存先) */
@@ -297,6 +297,10 @@ export function createApp(config: AppConfig, deps: AppDeps = {}): Hono {
     }
     if (err instanceof CommentNotFoundError) {
       return c.json({ error: 'not_found' }, 404);
+    }
+    if (err instanceof StoreClosingError) {
+      // 終了処理中。固定の応答だけを返す(保存はしていない)
+      return c.json({ error: 'shutting_down' }, 503);
     }
     if (err instanceof InputError) {
       // メッセージは固定の文字列(受け取った値を含まない)

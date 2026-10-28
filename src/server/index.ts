@@ -14,7 +14,7 @@ import { RepoDirCancelledError } from './repo-dir.js';
 import { resolveRepoDirFromProcess } from './repo-dir-io.js';
 import { openReviewService } from './service-factory.js';
 import {
-  closeServer,
+  closeResources,
   createShutdownHandler,
   describeError,
   registerShutdownSignals,
@@ -53,11 +53,8 @@ async function main(): Promise<void> {
   // まだ無いので、そのまま終了する(C-6)
   const shutdown = createShutdownHandler({
     // サーバーを閉じて(処理中のリクエストの完了を待って)から、受け付け済みの書き込みの完了を待つ。
-    // 終了処理中の新しい書き込みを断る処理と、起動時の一時ファイルの掃除は、B3 で足す
-    close: async () => {
-      if (running.server !== undefined) await closeServer(running.server);
-      if (running.store !== undefined) await running.store.drain();
-    },
+    // 先に書き込みの受け付けを止める(以後の書き込みは 503)。受け付け済みのものは drain で完了を待つ
+    close: () => closeResources(running),
     log,
     exit: (code) => process.exit(code),
   });
@@ -90,7 +87,7 @@ async function main(): Promise<void> {
   // 画面のビルド成果物が無ければ、ここで失敗させる(画面が空のまま動いていると気づけないため)
   const assets = await StaticAssets.load(CLIENT_DIR);
   // 保存ファイルの読み込み(壊れていればここで失敗する。黙って空にしない)
-  const { service, store } = await openReviewService(config);
+  const { service, store } = await openReviewService(config, log);
   running.store = store;
   running.server = await startServer(config, { log, assets, service });
 
